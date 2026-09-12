@@ -1,0 +1,392 @@
+// Prisma schema for AI 守護高齡者.
+//
+// Provider is SQLite for the prototype. Moving to PostgreSQL requires only
+// changing `provider` here and DATABASE_URL: no model uses a SQLite-specific
+// feature, and structured payloads are stored as TEXT containing JSON and
+// (de)serialised in server/db/repositories.ts, which keeps the schema
+// portable across both engines.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id            String  @id
+  email         String  @unique
+  name          String
+  nameZh        String
+  role          String
+  elderlyUserId String?
+  caregiverId   String?
+  avatarColor   String
+
+  @@index([role])
+}
+
+model ElderlyUser {
+  id                 String   @id
+  name               String
+  nameEn             String
+  age                Int
+  gender             String
+  city               String
+  district           String
+  lat                Float
+  lng                Float
+  phone              String
+  address            String
+  /// JSON string array of chronic conditions.
+  conditions         String
+  /// JSON string array of medications.
+  medications        String
+  status             String
+  /// JSON UserPermissions object.
+  permissions        String
+  elderlyModeDefault Boolean
+  /// JSON emergency-contact object.
+  emergencyContact   String
+  /// JSON PersonalBaseline object, learned from wearable history.
+  baseline           String
+  /// JSON AmbientProfile used by the simulation engine.
+  ambientProfile     String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  devices             Device[]
+  environmentReadings EnvironmentReading[]
+  wearableReadings    WearableReading[]
+  riskEvents          RiskEvent[]
+  alerts              Alert[]
+  notifications       Notification[]
+  assignments         CaregiverAssignment[]
+
+  @@index([status])
+  @@index([district])
+}
+
+model Caregiver {
+  id                      String   @id
+  name                    String
+  nameEn                  String
+  relationship            String
+  phone                   String
+  email                   String
+  /// JSON notification-preferences object.
+  notificationPreferences String
+  emergencyPermission     Boolean
+  status                  String
+  createdAt               DateTime @default(now())
+
+  assignments CaregiverAssignment[]
+  alerts      Alert[]
+
+  @@index([status])
+}
+
+/// Explicit join table so an assignment can be added or removed as its own
+/// auditable administrative action.
+model CaregiverAssignment {
+  id          String   @id @default(cuid())
+  caregiverId String
+  userId      String
+  createdAt   DateTime @default(now())
+
+  caregiver Caregiver   @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+  user      ElderlyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([caregiverId, userId])
+  @@index([userId])
+}
+
+model Device {
+  id         String   @id
+  deviceId   String   @unique
+  name       String
+  nameZh     String
+  type       String
+  userId     String
+  status     String
+  batteryPct Int?
+  signalPct  Int
+  lastSeen   DateTime
+  firmware   String
+  location   String
+  power      Boolean
+  isActuator Boolean
+  createdAt  DateTime @default(now())
+
+  user           ElderlyUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sensorReadings SensorReading[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([type])
+}
+
+model EnvironmentReading {
+  id                 String   @id @default(cuid())
+  userId             String
+  indoorTempC        Float
+  indoorHumidityPct  Float
+  outdoorTempC       Float
+  outdoorHumidityPct Float
+  airQualityIndex    Int
+  heatIndex          Float
+  simulated          Boolean  @default(true)
+  recordedAt         DateTime @default(now())
+
+  user ElderlyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recordedAt])
+}
+
+model WearableReading {
+  id                   String   @id @default(cuid())
+  userId               String
+  heartRateBpm         Int
+  skinTempC            Float
+  activityStepsPerHour Int
+  simulated            Boolean  @default(true)
+  recordedAt           DateTime @default(now())
+
+  user ElderlyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recordedAt])
+}
+
+model SensorReading {
+  id         String   @id @default(cuid())
+  deviceId   String
+  userId     String
+  metric     String
+  value      Float
+  unit       String
+  simulated  Boolean  @default(true)
+  recordedAt DateTime @default(now())
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, recordedAt])
+  @@index([metric, recordedAt])
+}
+
+model RiskEvent {
+  id            String   @id @default(cuid())
+  userId        String
+  level         String
+  previousLevel String?
+  score         Int
+  heatIndex     Float
+  reason        String
+  /// JSON RiskFactor array.
+  factors       String
+  /// JSON AIExplanation object.
+  explanation   String
+  /// JSON ActionType array.
+  actionsTaken  String
+  /// JSON ReadingSnapshot object.
+  readings      String
+  recordedAt    DateTime @default(now())
+
+  user ElderlyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recordedAt])
+  @@index([level])
+}
+
+model Alert {
+  id                    String    @id @default(cuid())
+  userId                String
+  userName              String
+  severity              String
+  level                 String
+  trigger               String
+  triggerZh             String
+  status                String
+  assignedCaregiverId   String?
+  assignedCaregiverName String?
+  /// JSON RiskAssessment snapshot at trigger time.
+  assessment            String?
+  /// JSON ActionType array.
+  actionsTaken          String
+  /// JSON AlertTimelineEntry array.
+  timeline              String
+  createdAt             DateTime  @default(now())
+  acknowledgedAt        DateTime?
+  resolvedAt            DateTime?
+
+  user      ElderlyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  caregiver Caregiver?  @relation(fields: [assignedCaregiverId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model NotificationTemplate {
+  key       String   @id
+  name      String
+  nameZh    String
+  title     String
+  titleZh   String
+  body      String
+  bodyZh    String
+  /// JSON NotificationChannel array.
+  channels  String
+  enabled   Boolean
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id            String   @id @default(cuid())
+  userId        String
+  userName      String
+  recipientId   String?
+  recipientName String
+  templateKey   String
+  channel       String
+  title         String
+  body          String
+  read          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  user ElderlyUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([recipientId, read])
+}
+
+model CoolingSpace {
+  id                 String   @id
+  name               String
+  nameEn             String
+  type               String
+  address            String
+  district           String
+  lat                Float
+  lng                Float
+  riskLevel          String
+  airConditioned     Boolean
+  accessible         Boolean
+  accessibilityNotes String
+  openingHours       String
+  opensAt            String
+  closesAt           String
+  contact            String
+  capacity           Int
+  status             String
+  createdAt          DateTime @default(now())
+
+  @@index([status])
+  @@index([district])
+}
+
+model CityRisk {
+  id                String   @id
+  city              String
+  district          String
+  lat               Float
+  lng               Float
+  temperatureC      Float
+  humidityPct       Float
+  heatIndex         Float
+  riskLevel         String
+  urbanDensity      Int
+  greenCoveragePct  Int
+  coolingSpaceCount Int
+  elderlyUserCount  Int
+  updatedAt         DateTime @updatedAt
+
+  @@index([city])
+}
+
+model DataSource {
+  id           String   @id
+  name         String
+  nameZh       String
+  kind         String
+  provider     String
+  status       String
+  lastSyncAt   DateTime
+  recordCount  Int
+  errorRatePct Float
+  /// JSON config object. Never holds secrets: credentials come from env vars.
+  config       String
+  enabled      Boolean
+}
+
+model ContentArticle {
+  id            String   @id
+  slug          String   @unique
+  title         String
+  titleZh       String
+  category      String
+  summary       String
+  summaryZh     String
+  body          String
+  bodyZh        String
+  /// JSON RiskLevel array.
+  showForLevels String
+  published     Boolean
+  updatedAt     DateTime @updatedAt
+  updatedBy     String
+
+  @@index([category, published])
+}
+
+model RiskRuleConfigRecord {
+  id        String   @id
+  /// JSON RiskRuleConfig object - the live configuration the engine reads.
+  payload   String
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt
+  updatedBy String
+}
+
+model ActionRuleRecord {
+  id          String   @id
+  name        String
+  nameZh      String
+  description String
+  enabled     Boolean
+  /// JSON RuleCondition array.
+  conditions  String
+  /// JSON ActionType array.
+  actions     String
+  priority    Int
+  builtIn     Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+
+  @@index([priority])
+}
+
+model SystemSetting {
+  key         String @id
+  label       String
+  labelZh     String
+  value       String
+  type        String
+  group       String
+  description String
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  actorName String
+  actorRole String
+  action    String
+  actionZh  String
+  entity    String
+  entityId  String
+  oldValue  String?
+  newValue  String?
+  at        DateTime @default(now())
+
+  @@index([at])
+  @@index([entity, entityId])
+}

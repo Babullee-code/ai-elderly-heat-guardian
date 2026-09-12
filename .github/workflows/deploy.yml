@@ -1,0 +1,87 @@
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Lets you redeploy from the Actions tab without pushing a commit.
+  workflow_dispatch:
+
+# GITHUB_TOKEN needs these to publish a Pages artifact.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A newer push should supersede an in-flight deploy, but never cancel one that
+# is mid-publish — that can leave the site in a half-updated state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Quality gates run first. A broken build should not reach the site, and a
+  # failing test should be visible before anyone clicks the demo link.
+  verify:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Prisma's client is generated, not committed, and the server code
+      # imports its types — so it must exist before typechecking.
+      - run: npx prisma generate
+        env:
+          DATABASE_URL: file:./dev.db
+
+      - run: npm run typecheck
+      - run: npm test
+
+  build:
+    name: Build static demo
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npx prisma generate
+        env:
+          DATABASE_URL: file:./dev.db
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build
+        run: npm run build:static
+        env:
+          # A project site is served from /<repo>/, so the bundle must be built
+          # with that prefix or every asset 404s.
+          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

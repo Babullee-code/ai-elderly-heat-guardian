@@ -1,0 +1,189 @@
+# Architecture
+
+## The central decision
+
+**The server owns the truth.** It runs the simulation clock, the risk engine
+and the policy engine, and broadcasts a complete snapshot to every connected
+client on each tick. The browser renders that snapshot and never recomputes
+risk.
+
+Everything else follows from this. The alternative — each client computing risk
+from raw readings — would have been easier to build and is how most prototypes
+of this shape are written. It was rejected for three reasons:
+
+1. **Two screens could disagree.** In a safety product, the caregiver dashboard
+   showing MEDIUM while the resident's phone shows HIGH is not a cosmetic bug.
+2. **CMS control would be a lie.** If the client held the thresholds, an admin
+   changing one would only affect screens that happened to refetch. Because the
+   server holds them, a change re-levels every resident on the next tick and
+   reaches every open browser within ~2 seconds.
+3. **The demo would need refreshing.** Requirement: the full escalation story
+   must play out without a manual refresh anywhere. A single push-based source
+   of truth gives that for free.
+
+The cost is that the client cannot work offline and is always a tick behind.
+For this product that is the right trade.
+
+## Data flow
+
+```
+  SENSORS (simulated)
+      │  tickReadings() — physically coupled, not independent noise
+      ▼
+  DATA INGESTION ───────────► an offline device HOLDS its last value;
+      │                        it never fabricates a reading
+      ▼
+  NORMALISATION  ReadingSnapshot
+      │
+      ▼
+  PERSONAL BASELINE  learned from resting samples per resident
+      │
+      ▼
+  RISK ENGINE   5 weighted factors ──► composite score 0-100
+      │                                 heat index ──► level band
+      ▼
+  RISK LEVEL    LOW / MEDIUM / HIGH
+      │
+      ▼
+  POLICY ENGINE  cumulative level actions ∪ CMS rule output
+      │          then gated by: admin policy ∧ user consent ∧ hardware
+      ▼
+  ACTIONS ──┬── resident guidance
+            ├── caregiver notification   (template, channel, quiet hours)
+            ├── smart home               (appliance power)
+            └── city guidance            (cooling-space ranking)
+      │
+      ▼
+  PERSISTENCE  risk events, alerts, notifications, periodic readings, audit log
+      │
+      ▼
+  BROADCAST    LiveSnapshot over WebSocket to every client
+
+  CMS ──────► configures every stage above
+```
+
+## Module responsibilities
+
+### `shared/` — domain logic
+
+Imported verbatim by both the server and the browser. Pure functions, no I/O.
+
+| Module | Responsibility |
+|---|---|
+| `heatIndex.ts` | NOAA Rothfusz regression, dew point, wet bulb |
+| `baselineEngine.ts` | Learn a personal baseline; score deviation from it |
+| `riskEngine.ts` | Five factors, composite score, level resolution, explanation |
+| `actionEngine.ts` | Action catalogue, rule evaluation, cooling authorisation |
+| `simulationEngine.ts` | Scenario phases and physically coupled reading generation |
+| `coolingSpaces.ts` | Distance, opening hours, recommendation ranking |
+| `notificationEngine.ts` | Template interpolation |
+| `permissions.ts` | Role → permission table |
+| `config.ts` | **The only hard-coded thresholds in the codebase** |
+
+The client imports these for one purpose only: so a preview (the rule builder's
+"would fire for N residents") uses the *same* evaluator as the server rather
+than a reimplementation that could drift.
+
+### `server/`
+
+| Module | Responsibility |
+|---|---|
+| `services/platformState.ts` | The simulation clock, live state, tick loop, broadcast |
+| `db/repositories.ts` | The database abstraction — the only module touching Prisma |
+| `routes/*.ts` | REST API: validate → authorise → mutate → audit → reload → respond |
+| `middleware/auth.ts` | Account resolution, permission checks, caregiver scoping |
+| `middleware/common.ts` | Zod validation, audit recording, error handling |
+
+### `src/`
+
+| Module | Responsibility |
+|---|---|
+| `store/live.ts` | WebSocket connection, snapshot state, memoised selectors |
+| `store/session.ts` | Signed-in account, permissions, elderly-mode preference |
+| `lib/api.ts` | Typed fetch wrapper; normalises errors into `ApiError` |
+| `components/domain/` | Risk indicators, cards, charts, table, map |
+| `pages/app/`, `pages/admin/` | The two experiences |
+
+## The tick loop
+
+`platformState.tick()` runs every `SIM_TICK_MS` (default 2000):
+
+1. Advance the scenario clock, if a scenario is running.
+2. For each **ACTIVE** resident:
+   a. Generate the next reading (`tickReadings`), coupled to appliance state.
+   b. Derive smart-home state from current device records.
+   c. Run the risk engine, then the policy engine.
+   d. Apply or withdraw cooling — writing to the database **only on change**.
+   e. Append to the rolling chart window (180 points, in memory).
+   f. On a level transition: persist a risk event, raise or resolve an alert,
+      emit notifications.
+3. Every 15th tick, persist readings and sensor samples.
+4. Every 600th tick, prune reading tables.
+5. Recompute district heat risk.
+6. Broadcast.
+
+### What is persisted, and what is not
+
+Persisting every tick would be poor engineering and would grow the database
+without bound. The split:
+
+**In memory** — current assessment, rolling chart window, simulation clock.
+Reconstructible, high-frequency, and meaningless once stale.
+
+**Persisted** — entities, risk events, alerts, notifications, periodic readings
+(every 15th tick), configuration, and every administrative change. The
+meaningful record.
+
+## Cache invalidation
+
+Every mutating admin route calls the matching `platformState.reload*()` after
+writing. `reloadConfig()` additionally **re-evaluates every resident
+immediately** rather than waiting for the next scheduled tick, so a threshold
+change is visible on the same frame the admin saves it.
+
+This is why the `PATCH /api/risk-rules` response can include `effect:
+PlatformStats` — by the time it returns, the new counts are already true.
+
+## Database abstraction
+
+`server/db/repositories.ts` is the only module that imports Prisma. Route
+handlers call repositories. Swapping SQLite for PostgreSQL, or Prisma for
+anything else, is a change confined to that file.
+
+Structured payloads (risk factors, explanations, permissions, timelines) are
+stored as TEXT containing JSON rather than a provider-specific JSON column, and
+all (de)serialisation goes through `toJson` / `fromJson`, which fall back
+rather than throwing on a malformed row. No model uses a SQLite-specific
+feature.
+
+## Security posture
+
+- **Authorisation is server-side.** Every mutating route checks a permission
+  from the role table. The client hides controls a role cannot use, but that is
+  a courtesy; a VIEWER token calling the API directly receives 403.
+- **Validation is server-side.** Every mutation is parsed by a Zod schema. The
+  client imports the same schemas for inline form feedback only.
+- **Partial updates are re-validated as a whole.** A patch that is individually
+  valid can produce an invalid result (raising `medium` above an unchanged
+  `high`); `PATCH /api/risk-rules` re-checks the merged object.
+- **Caregiver scoping.** A CAREGIVER account can only read residents assigned
+  to them — enforced by `requireUserScope`, not by hiding rows.
+- **Content validation rejects medical claims** — diagnosis, treatment and
+  guarantee language, in both English and Chinese.
+- **One setting cannot be enabled at all.** `privacy.showPhysiologyOnMap`
+  returns 422 by design: individual physiological data must never reach the
+  public city map, and an administrator cannot override that.
+- **No secrets in the database.** Data-source configuration holds endpoints and
+  intervals; credentials come from environment variables.
+- Errors never return stack traces to the client.
+
+## Known limitations
+
+- Live state is in-process; multiple server instances would need shared state.
+- The WebSocket is read-only for clients: all mutations go through HTTP so they
+  pass validation, authorisation and audit logging.
+- The rolling chart window is capped at 180 points per resident.
+- Historical chart points carry the heat-index band as an indicative score
+  rather than a recomputed composite, because the factor inputs for those older
+  samples (activity, heatwave day count) were not persisted. Recomputing them
+  would look more precise than the data supports.
