@@ -101,6 +101,14 @@ the situation has changed.
 One heat episode produces one alert thread: an existing open alert is escalated
 rather than duplicated.
 
+**Unacknowledged HIGH alerts escalate on their own.** After
+`notificationPolicy.escalateAfterMinutes` (default 10) a HIGH alert nobody has
+acknowledged moves to ESCALATED, records the resident's emergency contact on
+its timeline, and notifies any caregiver holding emergency permission —
+bypassing the usual quiet-hour filtering, which is what that permission is for.
+Acknowledging at any point stops it, and escalation fires once. MEDIUM alerts
+never escalate: an unread advisory is not an emergency.
+
 ### `/admin/notifications` — 通知中心
 
 Templates with a **live preview** that interpolates the draft against real

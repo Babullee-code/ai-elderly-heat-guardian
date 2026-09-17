@@ -162,7 +162,7 @@ large type, four cards, a help button. Not a separate app.
 **`/admin/action-rules`** — the IF/THEN rule builder, showing which rules are
 firing right now and for whom.
 
-**Tests** — `npm test`: 122 tests, including the heat index against published
+**Tests** — `npm test`: 133 tests, including the heat index against published
 NOAA values, the personal-baseline property, and the full demo arc itself so it
 cannot silently regress.
 

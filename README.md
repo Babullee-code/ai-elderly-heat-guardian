@@ -120,7 +120,7 @@ npm run preview:static   # serve dist/ with no backend running
 | `npm run setup` | `db:generate` + `db:push` + `db:seed` |
 | `npm run db:reset` | Delete the database and rebuild it from seed |
 | `npm run db:seed` | Re-seed (wipes and rebuilds; idempotent) |
-| `npm test` | Vitest suite (122 tests) |
+| `npm test` | Vitest suite (133 tests) |
 | `npm run typecheck` | `tsc --noEmit` across client, server and shared |
 | `npm run build` | Type-check then build the production bundle |
 
@@ -188,7 +188,7 @@ src/
   pages/admin/   administration CMS
   components/    ui primitives, domain components, charts, map
   store/         live (WebSocket) and session state
-tests/           122 tests over the domain logic
+tests/           133 tests over the domain logic
 docs/            architecture, risk engine, CMS, API, demo script
 ```
 
@@ -213,7 +213,7 @@ docs/            architecture, risk engine, CMS, API, demo script
 npm test
 ```
 
-122 tests covering the parts where being wrong matters:
+133 tests covering the parts where being wrong matters:
 
 - **Heat index** against published NOAA reference values, with monotonicity and
   boundary-adjustment checks.

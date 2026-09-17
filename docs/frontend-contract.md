@@ -168,8 +168,7 @@ Never render `{error.message}` from an unknown object — use `ApiError.displayM
 npx tsc --noEmit -p tsconfig.json
 ```
 
-Must report zero errors. Do **not** run `vite build` or start a dev server —
-other agents are working in the same tree concurrently.
+Must report zero errors.
 
 ## Tone of copy
 

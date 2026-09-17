@@ -10,7 +10,7 @@ swept up.
 | Gate | Result |
 |---|---|
 | `npm run typecheck` | **0 errors** across client, server, shared and tests |
-| `npm test` | **122 passed** (5 files); demo-arc test run 3× for flakiness |
+| `npm test` | **133 passed** (6 files); demo-arc test run 3× for flakiness |
 | `npm run build` | Succeeds; 2,675 modules |
 
 ## Requirement verification
@@ -106,6 +106,34 @@ sources, system, audit log. 26 page modules, smallest 10.5 KB — no stubs.
 | 7 | Alert centre empty while dashboard showed residents at risk | Alerts only raised on *transition*; residents already above threshold at boot produced none | Open cases at startup for anyone already at MEDIUM+ |
 | 8 | ~60 type errors across server routes | Express 5 types `req.params.x` as `string \| string[]` | Added typed `pathParam` accessor rather than scattering casts |
 
+### Second audit — controls that presented as working and did not
+
+A later audit of the input pipeline found four more, missed by the first pass
+because each one *looked* correct in the UI. Two were privacy switches, which
+makes them worse than a missing feature: the resident was told the control did
+something it did not.
+
+| # | Defect | Cause | Fix |
+|---|---|---|---|
+| 9 | `physiologicalDataStorage` did not stop storage | `recordWearable()` ran unconditionally; the consent only gated the re-learn endpoint | Storage gated. Risk is still evaluated from the live reading; what the resident gives up is history and baseline learning, which is what declining means |
+| 10 | `cityDataContribution` enforced nowhere | Existed only as a default value; district counts included everyone | Counts recomputed each tick from live consent |
+| 11 | `escalateAfterMinutes` was a dead setting | Editable, audited and displayed while no timer acted on it | Unacknowledged HIGH alerts now escalate once, record the emergency contact on the timeline, and notify caregivers holding emergency permission |
+| 12 | Data sources reported invented figures | Weather feed shown ONLINE with 128,450 records and a 0.2% error rate; nothing had ever called it | Unconnected feeds report OFFLINE with zero records; simulated feeds are labelled as such |
+
+Verified against a running server: consent off → 0 new wearable rows over two
+persist cycles (consent on → 2); withdrawing city consent → district total
+48 → 47; `escalateAfterMinutes=1` → 3 HIGH alerts escalated, 8 MEDIUM correctly
+untouched.
+
+The escalation decision and both consent predicates were extracted to
+`shared/domain/alertPolicy.ts` as pure functions and pinned by 11 new tests, so
+they are shared by both backends rather than diverging.
+
+**Correction to this report:** its first version stated that an audit found no
+placeholders or no-op handlers. That was wrong — the audit searched for
+`TODO`/`onClick={() => {}}` patterns, which these four defects do not match.
+A control can be fully wired to a backend that ignores it.
+
 ### Test defects (my assertions, not the engine)
 
 Three initial failures were wrong reference values in my own tests, corrected
@@ -116,12 +144,11 @@ literal seconds.
 
 ## Known limitations
 
-- **Live state is in-process.** Multiple server instances would need shared
-  state; a single instance is correct for a demo.
-- **Historical chart points** use the heat-index band as an indicative score
-  rather than a recomputed composite, because factor inputs for older samples
-  were not persisted. Recomputing would look more precise than the data
-  supports.
+Architectural limitations (in-process state, the read-only socket, the chart
+window cap, indicative historical scores) are documented once in
+[`architecture.md`](architecture.md#known-limitations) rather than repeated here.
+Limitations specific to this verification run:
+
 - **Bundle is ~2 MB** (529 KB gzipped), dominated by Recharts and Leaflet.
   Acceptable for a local demo; production should code-split by route.
 - **Authentication is a demo stub** — see README. Authorisation is real.
