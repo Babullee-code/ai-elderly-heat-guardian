@@ -85,6 +85,10 @@ import {
 } from '@shared/domain/simulationEngine';
 import { calculateHeatIndex, clamp, round1 } from '@shared/domain/heatIndex';
 import { cloneDefaultActionRules, cloneDefaultConfig } from '@shared/domain/config';
+import {
+  mayContributeToCityStats,
+  shouldEscalate,
+} from '@shared/domain/alertPolicy';
 
 import {
   ACCOUNT_SEEDS,
@@ -489,7 +493,10 @@ export class DemoBackend {
         coolingSpaceCount: this.coolingSpaces.filter(
           (s) => s.district === district.name && s.status === 'ACTIVE',
         ).length,
-        elderlyUserCount: this.users.filter((u) => u.district === district.name).length,
+        // Only residents who consented to contribute to city statistics.
+        elderlyUserCount: this.users.filter(
+          (u) => u.district === district.name && mayContributeToCityStats(u),
+        ).length,
         updatedAt: new Date().toISOString(),
       };
     });
@@ -665,8 +672,42 @@ export class DemoBackend {
       }
     }
 
+    this.escalateUnacknowledgedAlerts();
     this.updateCityRisk();
     this.broadcast();
+  }
+
+  /**
+   * Escalate HIGH alerts nobody has acknowledged, using the same shared policy
+   * as the server so the two backends cannot disagree about when an
+   * unanswered emergency gets chased.
+   */
+  private escalateUnacknowledgedAlerts(): void {
+    const now = new Date();
+
+    for (const alert of this.alerts) {
+      const decision = shouldEscalate(alert, this.config, now);
+      if (!decision.escalate) continue;
+
+      const runtime = this.runtimes.get(alert.userId);
+      const contact = runtime?.user.emergencyContact;
+
+      alert.status = 'ESCALATED';
+      alert.timeline = [
+        ...alert.timeline,
+        {
+          at: now.toISOString(),
+          label: `No acknowledgement after ${decision.ageMinutes} minutes - escalated to emergency contact${
+            contact ? ` (${contact.name}, ${contact.phone})` : ''
+          }`,
+          labelZh: `超過 ${decision.ageMinutes} 分鐘未有人確認，已升級並通知緊急聯絡人${
+            contact ? `（${contact.name}，${contact.phone}）` : ''
+          }`,
+          actor: 'Escalation Policy',
+          kind: 'STATUS',
+        },
+      ];
+    }
   }
 
   private applyCooling(runtime: UserRuntime, assessment: RiskAssessment): void {

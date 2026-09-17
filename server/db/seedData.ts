@@ -855,17 +855,27 @@ export function coolingSpaceSeeds(): Omit<CoolingSpace, 'createdAt'>[] {
 // Data sources
 // ---------------------------------------------------------------------------
 
+/**
+ * Data sources.
+ *
+ * Status and record counts here describe what this prototype ACTUALLY has.
+ * The weather and city feeds are declared endpoints that nothing calls yet, so
+ * they are seeded OFFLINE with zero records rather than reporting a healthy
+ * integration that does not exist. The sensor and wearable feeds are genuinely
+ * supplying the platform - from the simulator - so they report ONLINE, and the
+ * prototype says so plainly elsewhere in the UI.
+ */
 export const DATA_SOURCE_SEEDS: DataSource[] = [
   {
     id: 'ds-weather',
     name: 'Central Weather Administration',
     nameZh: '中央氣象署 開放資料',
     kind: 'WEATHER',
-    provider: 'CWA Open Data',
-    status: 'ONLINE',
-    lastSyncAt: new Date().toISOString(),
-    recordCount: 128_450,
-    errorRatePct: 0.2,
+    provider: 'CWA Open Data (not yet connected)',
+    status: 'OFFLINE',
+    lastSyncAt: new Date(0).toISOString(),
+    recordCount: 0,
+    errorRatePct: 0,
     config: { endpoint: 'https://opendata.cwa.gov.tw/api', intervalSec: 600, retries: 3 },
     enabled: true,
   },
@@ -874,11 +884,11 @@ export const DATA_SOURCE_SEEDS: DataSource[] = [
     name: 'Home Sensor Gateway',
     nameZh: '居家感測器閘道',
     kind: 'SENSOR',
-    provider: 'HeatGuard Gateway',
+    provider: 'HeatGuard Gateway (simulated source)',
     status: 'ONLINE',
     lastSyncAt: new Date().toISOString(),
-    recordCount: 2_048_912,
-    errorRatePct: 1.4,
+    recordCount: 0,
+    errorRatePct: 0,
     config: { endpoint: 'https://gateway.internal/sensors', intervalSec: 30, retries: 5 },
     enabled: true,
   },
@@ -887,11 +897,11 @@ export const DATA_SOURCE_SEEDS: DataSource[] = [
     name: 'Wearable Sync Service',
     nameZh: '穿戴裝置同步服務',
     kind: 'WEARABLE',
-    provider: 'HeatGuard Wear SDK',
-    status: 'DEGRADED',
-    lastSyncAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-    recordCount: 987_331,
-    errorRatePct: 6.8,
+    provider: 'HeatGuard Wear SDK (simulated source)',
+    status: 'ONLINE',
+    lastSyncAt: new Date().toISOString(),
+    recordCount: 0,
+    errorRatePct: 0,
     config: { endpoint: 'https://wear.internal/sync', intervalSec: 60, retries: 4 },
     enabled: true,
   },
@@ -900,11 +910,11 @@ export const DATA_SOURCE_SEEDS: DataSource[] = [
     name: 'Taipei Open Data Platform',
     nameZh: '臺北市資料大平台',
     kind: 'CITY',
-    provider: 'data.taipei',
-    status: 'ONLINE',
-    lastSyncAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    recordCount: 12_884,
-    errorRatePct: 0.5,
+    provider: 'data.taipei (not yet connected)',
+    status: 'OFFLINE',
+    lastSyncAt: new Date(0).toISOString(),
+    recordCount: 0,
+    errorRatePct: 0,
     config: { endpoint: 'https://data.taipei/api/v1', intervalSec: 3600, retries: 3 },
     enabled: true,
   },
@@ -913,9 +923,9 @@ export const DATA_SOURCE_SEEDS: DataSource[] = [
     name: 'Public Cooling Facility Registry',
     nameZh: '公共涼適空間名錄',
     kind: 'COOLING_LOCATION',
-    provider: 'Municipal Social Affairs Bureau',
+    provider: 'Municipal Social Affairs Bureau (local registry)',
     status: 'ONLINE',
-    lastSyncAt: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString(),
+    lastSyncAt: new Date().toISOString(),
     recordCount: 42,
     errorRatePct: 0,
     config: { endpoint: 'https://data.taipei/api/v1/cooling-spaces', intervalSec: 86400, retries: 2 },

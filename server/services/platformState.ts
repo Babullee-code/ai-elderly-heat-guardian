@@ -63,6 +63,11 @@ import {
 } from '../../shared/domain/simulationEngine.js';
 import { calculateHeatIndex, clamp, round1 } from '../../shared/domain/heatIndex.js';
 import {
+  mayContributeToCityStats,
+  mayStorePhysiology,
+  shouldEscalate,
+} from '../../shared/domain/alertPolicy.js';
+import {
   actionRuleRepo,
   alertRepo,
   caregiverRepo,
@@ -484,12 +489,36 @@ class PlatformState {
 
       // --- Persistence -----------------------------------------------------
       if (persist) {
+        // Environmental readings describe the home, not the person, and are
+        // needed to explain a risk decision after the fact.
         await readingRepo.recordEnvironment(runtime.user.id, reading, assessment.heatIndex);
-        await readingRepo.recordWearable(runtime.user.id, reading);
+
+        /**
+         * Physiological data is only stored with the resident's consent.
+         *
+         * `physiologicalDataStorage` previously gated the re-learn endpoint
+         * but NOT this write, so a resident who declined storage had their
+         * heart rate, skin temperature and activity persisted anyway. A
+         * consent switch that does not do what it says is worse than not
+         * offering one.
+         *
+         * Risk is still evaluated for them - the live reading is used and
+         * discarded. What they lose is history and baseline learning, which
+         * is exactly what they declined.
+         */
+        const storePhysiology = mayStorePhysiology(runtime.user);
+
+        if (storePhysiology) {
+          await readingRepo.recordWearable(runtime.user.id, reading);
+        }
 
         for (const device of this.devices.filter(
           (d) => d.userId === runtime.user.id && d.status === 'ONLINE',
         )) {
+          // A smart watch reports physiological metrics, so its samples fall
+          // under the same consent as the wearable record above.
+          if (device.type === 'SMART_WATCH' && !storePhysiology) continue;
+
           const sample = sensorSampleFor(device, reading, assessment.heatIndex);
           if (sample) sensorSamples.push(sample);
         }
@@ -499,6 +528,8 @@ class PlatformState {
     if (persist && sensorSamples.length > 0) {
       await readingRepo.recordSensorSamples(sensorSamples);
     }
+
+    await this.escalateUnacknowledgedAlerts();
 
     if (this.simulation.tickCount % PRUNE_EVERY_TICKS === 0) {
       await readingRepo.prune();
@@ -703,6 +734,86 @@ class PlatformState {
     this.alerts = [alert, ...this.alerts].slice(0, 150);
   }
 
+  /**
+   * Escalate HIGH alerts nobody has acknowledged.
+   *
+   * `notificationPolicy.escalateAfterMinutes` was configurable, audited and
+   * displayed in the CMS while nothing acted on it - the worst kind of dead
+   * control, because an operator would reasonably believe an unanswered
+   * emergency was being chased.
+   *
+   * An alert escalates once. It moves to ESCALATED, the emergency contact is
+   * recorded on the timeline, and a caregiver with emergency permission is
+   * notified if one exists. Acknowledging it at any point stops this.
+   */
+  private async escalateUnacknowledgedAlerts(): Promise<void> {
+    const now = new Date();
+
+    for (const alert of this.alerts) {
+      const decision = shouldEscalate(alert, this.config, now);
+      if (!decision.escalate) continue;
+
+      const runtime = this.runtimes.get(alert.userId);
+      const contact = runtime?.user.emergencyContact;
+      const minutes = decision.ageMinutes;
+
+      const updated = await alertRepo.update(alert.id, {
+        status: 'ESCALATED',
+        appendTimeline: [
+          {
+            at: new Date().toISOString(),
+            label: `No acknowledgement after ${minutes} minutes - escalated to emergency contact${
+              contact ? ` (${contact.name}, ${contact.phone})` : ''
+            }`,
+            labelZh: `超過 ${minutes} 分鐘未有人確認，已升級並通知緊急聯絡人${
+              contact ? `（${contact.name}，${contact.phone}）` : ''
+            }`,
+            actor: 'Escalation Policy',
+            kind: 'STATUS',
+          },
+        ],
+      });
+
+      this.replaceAlert(updated);
+
+      // Notify any caregiver holding emergency permission, over and above the
+      // usual level and quiet-hour filtering - that is what the permission is
+      // for.
+      if (runtime) {
+        const responders = this.caregivers.filter(
+          (c) =>
+            c.status === 'ACTIVE' &&
+            c.emergencyPermission &&
+            c.assignedUserIds.includes(runtime.user.id),
+        );
+
+        for (const responder of responders) {
+          const notification = await notificationRepo.create({
+            userId: runtime.user.id,
+            userName: runtime.user.name,
+            recipientId: responder.id,
+            recipientName: responder.name,
+            templateKey: 'HIGH_RISK',
+            channel: 'VOICE_CALL',
+            title: `緊急升級：${runtime.user.name} 的高風險警示未被確認`,
+            body: `高風險警示已超過 ${minutes} 分鐘未有人確認，系統已升級處理。緊急聯絡人：${
+              contact ? `${contact.name} ${contact.phone}` : '未設定'
+            }。請立即聯繫。`,
+            read: false,
+            createdAt: new Date().toISOString(),
+          });
+
+          this.notifications = [notification, ...this.notifications].slice(0, 150);
+          this.notificationsToday++;
+        }
+      }
+
+      console.warn(
+        `[escalation] Alert ${alert.id} for ${alert.userName} unacknowledged after ${minutes}min - escalated`,
+      );
+    }
+  }
+
   /** Swap an updated alert into the in-memory list, preserving order. */
   private replaceAlert(updated: Alert): void {
     const index = this.alerts.findIndex((a) => a.id === updated.id);
@@ -867,6 +978,22 @@ class PlatformState {
     const focus = this.runtimes.get(this.simulation.focusUserId);
     const focusDistrict = focus?.user.district;
 
+    /**
+     * District resident counts include only residents who consented to
+     * contribute to city statistics.
+     *
+     * `cityDataContribution` was previously enforced nowhere: the privacy
+     * centre told residents this switch controlled whether their data fed the
+     * city aggregate, and it did not. Counting is recomputed here from live
+     * consent so withdrawing it takes effect on the next tick.
+     */
+    const consentingByDistrict = new Map<string, number>();
+    for (const runtime of this.runtimes.values()) {
+      if (!mayContributeToCityStats(runtime.user)) continue;
+      const district = runtime.user.district;
+      consentingByDistrict.set(district, (consentingByDistrict.get(district) ?? 0) + 1);
+    }
+
     // How far the scenario has pushed outdoor temperature above the profile
     // baseline, used as the citywide forcing term.
     const forcing =
@@ -895,7 +1022,14 @@ class PlatformState {
             ? 'MEDIUM'
             : 'LOW';
 
-      return { ...district, temperatureC, humidityPct, heatIndex, riskLevel };
+      return {
+        ...district,
+        temperatureC,
+        humidityPct,
+        heatIndex,
+        riskLevel,
+        elderlyUserCount: consentingByDistrict.get(district.district) ?? 0,
+      };
     });
   }
 
