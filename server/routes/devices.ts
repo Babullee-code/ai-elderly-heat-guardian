@@ -14,7 +14,16 @@ import {
   deviceUpdateSchema,
   smartHomeCommandSchema,
 } from '../../shared/schemas/index.js';
-import type { Device, DeviceType, SensorMetric } from '../../shared/types/domain.js';
+import type {
+  DataQuality,
+  Device,
+  DeviceType,
+  SensorMetric,
+} from '../../shared/types/domain.js';
+import {
+  isHeldQuality,
+  primaryFieldForDevice,
+} from '../../shared/domain/provenance.js';
 import { deviceRepo, readingRepo, userRepo } from '../db/repositories.js';
 import { platformState } from '../services/platformState.js';
 import { asyncHandler, pathParam, recordAudit, validate } from '../middleware/common.js';
@@ -415,17 +424,31 @@ sensorsRouter.get(
         const metric = metricFor(device.type);
         const value = reading ? valueFor(device.type, reading, assessment?.heatIndex ?? 0) : null;
 
+        /**
+         * Freshness comes from the assessment the risk engine actually used,
+         * so this console cannot disagree with the resident's own screen about
+         * whether a value is current.
+         */
+        const field = primaryFieldForDevice(device.type);
+        const provenance = field ? assessment?.provenance?.fields?.[field] : undefined;
+        const quality: DataQuality =
+          provenance?.quality ??
+          (device.status === 'OFFLINE' || device.status === 'DISABLED' ? 'OFFLINE' : 'LIVE');
+
         return {
           device,
           userName: userMap.get(device.userId)?.name ?? 'Unknown',
           metric,
           value,
           unit: unitFor(device.type),
-          // A disabled or offline sensor reports a stale value, which the UI
-          // must show as stale rather than current.
-          stale: device.status === 'OFFLINE' || device.status === 'DISABLED',
+          quality,
+          ageSec: provenance?.ageSec ?? null,
+          origin: provenance?.origin ?? null,
+          // Retained for callers that only need the binary answer: a held
+          // value must never be shown as a current one.
+          stale: isHeldQuality(quality),
           lastSeen: device.lastSeen,
-          simulated: true,
+          simulated: provenance?.simulated ?? true,
         };
       });
 

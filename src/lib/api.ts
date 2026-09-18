@@ -14,6 +14,8 @@ import type {
   AuditLogEntry,
   Caregiver,
   CityRisk,
+  DataOrigin,
+  DataQuality,
   ContentArticle,
   CoolingSpace,
   CoolingSpaceRecommendation,
@@ -214,6 +216,11 @@ export interface SensorRow {
   metric: string;
   value: number | null;
   unit: string;
+  /** The risk engine's freshness verdict for this device's primary field. */
+  quality: DataQuality;
+  ageSec: number | null;
+  origin: DataOrigin | null;
+  /** True when `quality` means the value shown is a held one. */
   stale: boolean;
   lastSeen: string;
   simulated: boolean;

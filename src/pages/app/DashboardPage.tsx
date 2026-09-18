@@ -37,6 +37,8 @@ import type {
   Device,
   DeviceType,
   ElderlyUser,
+  FieldProvenance,
+  MeasurementField,
   PersonalBaseline,
   RiskRuleConfig,
 } from '@shared/types/domain';
@@ -77,6 +79,7 @@ import {
   EmptyState,
   LiveIndicator,
   MetricTile,
+  DataQualitySummary,
   RiskBadge,
   RiskFactorList,
   RiskScoreDial,
@@ -98,20 +101,21 @@ import { SimulateRiskButton } from '@/components/domain/DemoControls';
 // ---------------------------------------------------------------------------
 
 /**
- * Which device supplies a reading, and whether that device is currently down.
+ * Which device supplies a reading.
  *
- * When a sensor is offline the platform holds its last value rather than
- * inventing one, so the tile must say the number is not current.
+ * Only the label is derived here. Whether the value is current is the server's
+ * decision, carried on the assessment's provenance - this page must not form
+ * its own opinion, or the resident's screen could contradict the judgement the
+ * risk engine actually acted on.
  */
 function sourceFor(devices: Device[], type: DeviceType) {
   const device = devices.find((d) => d.type === type) ?? null;
   if (!device) {
-    return { device: null, label: '無對應裝置', stale: false };
+    return { device: null, label: '無對應裝置' };
   }
   return {
     device,
     label: DEVICE_LABELS_ZH[device.type] ?? device.nameZh,
-    stale: device.status === 'OFFLINE' || device.status === 'DISABLED',
   };
 }
 
@@ -374,6 +378,10 @@ export default function DashboardPage() {
   const indoorHumidity = sourceFor(devices, 'HUMIDITY_SENSOR');
   const wearable = sourceFor(devices, 'SMART_WATCH');
 
+  /** The server's freshness verdict for one field, if it sent one. */
+  const prov = (field: MeasurementField): FieldProvenance | undefined =>
+    assessment.provenance?.fields?.[field];
+
   const updatedLine = `最後更新 ${formatTime(assessment.timestamp)}（${timeAgo(assessment.timestamp)}）· 每 ${assessment.monitoringIntervalSec} 秒重新評估`;
 
   const helpDialog = (
@@ -614,6 +622,12 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
+        {/*
+          Stated before the numbers, not after: a resident reading a held value
+          should know it is held before they decide it means they are fine.
+        */}
+        {assessment.provenance && <DataQualitySummary provenance={assessment.provenance} />}
+
         {/* --------------------------- Environment --------------------------- */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <MetricTile
@@ -622,7 +636,7 @@ export default function DashboardPage() {
             unit="°C"
             icon={Thermometer}
             sublabel={indoorTemp.label}
-            stale={indoorTemp.stale}
+            provenance={prov('indoorTempC')}
             tone={readings.indoorTempC >= smartHome.targetTempC ? 'medium' : 'neutral'}
           />
           <MetricTile
@@ -631,7 +645,7 @@ export default function DashboardPage() {
             unit="%"
             icon={Droplet}
             sublabel={indoorHumidity.label}
-            stale={indoorHumidity.stale}
+            provenance={prov('indoorHumidityPct')}
           />
           <MetricTile
             label="室外溫度"
@@ -639,6 +653,7 @@ export default function DashboardPage() {
             unit="°C"
             icon={Sun}
             sublabel="城市氣象資料"
+            provenance={prov('outdoorTempC')}
           />
           <MetricTile
             label="心率"
@@ -646,7 +661,7 @@ export default function DashboardPage() {
             unit="BPM"
             icon={Heart}
             sublabel={`平常 ${assessment.baseline.range.min}–${assessment.baseline.range.max}`}
-            stale={wearable.stale}
+            provenance={prov('heartRateBpm')}
             tone={assessment.baseline.aboveBaseline ? 'high' : 'low'}
           />
           <MetricTile
@@ -655,7 +670,7 @@ export default function DashboardPage() {
             unit="步/時"
             icon={Footprints}
             sublabel={wearable.label}
-            stale={wearable.stale}
+            provenance={prov('activityStepsPerHour')}
           />
         </div>
       </section>

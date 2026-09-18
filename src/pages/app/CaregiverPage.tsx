@@ -61,6 +61,7 @@ import {
 import {
   EmptyState,
   MetricTile,
+  DataQualitySummary,
   RiskBadge,
   RiskSummaryStrip,
 } from '@/components/domain/RiskIndicators';
@@ -815,12 +816,14 @@ function UrgentCard({ row, onOpen }: { row: RosterRow; onOpen: () => void }) {
                   }
                   icon={Heart}
                   tone={assessment.baseline.aboveBaseline ? 'high' : 'neutral'}
+                  provenance={assessment.provenance?.fields?.heartRateBpm}
                 />
                 <MetricTile
                   label="活動量"
                   value={formatNumber(assessment.readings.activityStepsPerHour)}
                   unit="步/時"
                   icon={Footprints}
+                  provenance={assessment.provenance?.fields?.activityStepsPerHour}
                 />
               </div>
 
@@ -914,6 +917,8 @@ function ResidentDetail({ row }: { row: RosterRow }) {
         />
       ) : (
         <div className="space-y-4">
+          {current.provenance && <DataQualitySummary provenance={current.provenance} />}
+
           {/* STATUS */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <MetricTile
@@ -937,6 +942,7 @@ function ResidentDetail({ row }: { row: RosterRow }) {
               sublabel={current.baseline.descriptionZh}
               icon={Heart}
               tone={current.baseline.aboveBaseline ? 'high' : 'neutral'}
+              provenance={current.provenance?.fields?.heartRateBpm}
             />
             <MetricTile
               label="裝置連線"

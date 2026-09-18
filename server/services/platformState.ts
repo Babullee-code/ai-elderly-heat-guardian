@@ -62,6 +62,7 @@ import {
   tickReadings,
 } from '../../shared/domain/simulationEngine.js';
 import { calculateHeatIndex, clamp, round1 } from '../../shared/domain/heatIndex.js';
+import { buildProvenance } from '../../shared/domain/provenance.js';
 import {
   mayContributeToCityStats,
   mayStorePhysiology,
@@ -343,6 +344,21 @@ class PlatformState {
   }): RiskAssessment {
     const { user, baseline, reading, history, previousLevel } = args;
 
+    const userDevices = this.devices.filter((d) => d.userId === user.id);
+
+    /**
+     * Provenance is built from live device status, so a sensor the CMS just
+     * disabled is reported as OFFLINE on this very tick rather than at the
+     * next reload.
+     */
+    const provenance = buildProvenance({
+      reading,
+      devices: userDevices,
+      // No ingestion path exists yet (Phase 3), so every value is simulated
+      // and the UI says so rather than implying attached hardware.
+      simulated: reading.simulated,
+    });
+
     const core = assessRisk({
       userId: user.id,
       reading,
@@ -350,9 +366,8 @@ class PlatformState {
       config: this.config,
       history,
       previousLevel,
+      provenance,
     });
-
-    const userDevices = this.devices.filter((d) => d.userId === user.id);
     const caregivers = this.caregivers.filter(
       (c) => c.status === 'ACTIVE' && c.assignedUserIds.includes(user.id),
     );
@@ -427,8 +442,27 @@ class PlatformState {
     }[] = [];
 
     for (const runtime of this.runtimes.values()) {
-      // Suspended and inactive users are not monitored.
-      if (runtime.user.status !== 'ACTIVE') continue;
+      /**
+       * Suspended and inactive residents are not monitored: no risk is
+       * evaluated, no actions are taken and no alerts are raised for them.
+       *
+       * Their provenance is still refreshed, because the alternative is a
+       * console that reports a two-minute-old reading for a resident nobody
+       * has looked at since the server started. Not monitoring someone is a
+       * decision; misreporting how old their data is, is a defect.
+       */
+      if (runtime.user.status !== 'ACTIVE') {
+        runtime.assessment = {
+          ...runtime.assessment,
+          provenance: buildProvenance({
+            reading: runtime.reading,
+            devices: this.devices.filter((d) => d.userId === runtime.user.id),
+            simulated: runtime.reading.simulated,
+            monitored: false,
+          }),
+        };
+        continue;
+      }
 
       const isFocus = runtime.user.id === this.simulation.focusUserId;
 
@@ -529,6 +563,8 @@ class PlatformState {
       await readingRepo.recordSensorSamples(sensorSamples);
     }
 
+    await this.touchReportingDevices(persist);
+
     await this.escalateUnacknowledgedAlerts();
 
     if (this.simulation.tickCount % PRUNE_EVERY_TICKS === 0) {
@@ -538,6 +574,41 @@ class PlatformState {
 
     this.updateCityRisk();
     this.broadcast();
+  }
+
+  /**
+   * Record that every online sensor has just reported.
+   *
+   * `lastSeen` is the platform's answer to "when did we last hear from this
+   * device", and it is what the age of a held value is measured against. Left
+   * at its seeded value it made an online sensor look a day out of contact,
+   * and - worse - a sensor that went offline a moment ago reported its held
+   * value as a day old, understating how current the number really was.
+   *
+   * The database write is throttled to the existing persistence cadence; the
+   * in-memory value advances every tick, because that is what clients read.
+   * When Phase 3 introduces a real ingestion endpoint, this is the line that
+   * moves into it: a device is last seen when it actually sends something.
+   */
+  private async touchReportingDevices(persist: boolean): Promise<void> {
+    const now = new Date().toISOString();
+    const monitored = new Set(
+      [...this.runtimes.values()]
+        .filter((r) => r.user.status === 'ACTIVE')
+        .map((r) => r.user.id),
+    );
+
+    const reporting = this.devices.filter(
+      (d) => !d.isActuator && d.status === 'ONLINE' && monitored.has(d.userId),
+    );
+
+    for (const device of reporting) device.lastSeen = now;
+
+    if (!persist) return;
+
+    await Promise.all(
+      reporting.map((device) => deviceRepo.update(device.id, { lastSeen: now })),
+    );
   }
 
   /**

@@ -77,6 +77,7 @@ Imported verbatim by both the server and the browser. Pure functions, no I/O.
 | `simulationEngine.ts` | Scenario phases and physically coupled reading generation |
 | `coolingSpaces.ts` | Distance, opening hours, recommendation ranking |
 | `notificationEngine.ts` | Template interpolation |
+| `provenance.ts` | Per-field origin and freshness: the only place staleness is decided |
 | `permissions.ts` | Role → permission table |
 | `config.ts` | **The only hard-coded thresholds in the codebase** |
 
@@ -177,12 +178,57 @@ feature.
   intervals; credentials come from environment variables.
 - Errors never return stack traces to the client.
 
+## Data provenance
+
+A `ReadingSnapshot` carries one `simulated` flag and one timestamp for all
+nine measurements, so it cannot distinguish "indoor temperature is live from
+the living-room sensor" from "the wearable went quiet four minutes ago".
+`ReadingProvenance` travels **alongside** the snapshot on every
+`RiskAssessment`, one `FieldProvenance` per field:
+
+| Quality | Meaning |
+|---|---|
+| `LIVE` | Measured within the last 60s |
+| `RECENT` | 60–300s old; still usable for a risk decision |
+| `STALE` | Older than 300s |
+| `OFFLINE` | The device is down, disabled, or the resident is not monitored |
+
+| Origin | Meaning |
+|---|---|
+| `DEVICE` | A real device reported it |
+| `SIMULATOR` | The simulation engine produced it |
+| `HELD` | The last successful reading, retained because the source went away |
+| `DEFAULT` | No sensor installed; estimated from the environment model |
+| `WEATHER_API` | A weather provider supplied it (not yet connected) |
+
+Three distinctions the layer exists to preserve:
+
+1. **Held is not fabricated.** When a sensor drops out the platform retains its
+   last value and labels it `HELD`, with the age measured from the device's
+   last contact rather than from the snapshot that carried it.
+2. **Estimated is not degraded.** 42 of the 50 seeded households have no
+   air-quality sensor; that value is modelled, current, and marked `DEFAULT`.
+   Reporting it as `OFFLINE` would put almost every resident in a permanent
+   warning state and train readers to ignore the badge. `estimatedFields` is
+   therefore reported separately from `degradedFields`.
+3. **Unmonitored is not fresh.** A suspended resident's reading is frozen
+   because nothing refreshes it. Their provenance is rebuilt each tick with
+   `monitored: false` so it reads `OFFLINE`, rather than reporting whatever
+   age it happened to be frozen at.
+
+Provenance is **descriptive only**. It does not enter the risk score — a
+degraded input produces the same number it would have produced live, so the
+score stays reproducible. Making data quality influence the score would be a
+versioned model change, not a side effect of this layer.
+
 ## Known limitations
 
 - Live state is in-process; multiple server instances would need shared state.
 - The WebSocket is read-only for clients: all mutations go through HTTP so they
   pass validation, authorisation and audit logging.
 - The rolling chart window is capped at 180 points per resident.
+- `WEATHER_API` is defined but unused: no weather provider is connected, so
+  outdoor values are labelled `SIMULATOR` rather than claiming a live feed.
 - Historical chart points carry the heat-index band as an indicative score
   rather than a recomputed composite, because the factor inputs for those older
   samples (activity, heatwave day count) were not persisted. Recomputing them

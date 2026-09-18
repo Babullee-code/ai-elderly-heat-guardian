@@ -8,7 +8,19 @@
 
 import * as React from 'react';
 import { AlertOctagon, AlertTriangle, ShieldCheck, TrendingDown, TrendingUp, Minus } from 'lucide-react';
-import type { RiskAssessment, RiskFactor, RiskLevel } from '@shared/types/domain';
+import type {
+  DataQuality,
+  FieldProvenance,
+  ReadingProvenance,
+  RiskAssessment,
+  RiskFactor,
+  RiskLevel,
+} from '@shared/types/domain';
+import {
+  estimatedSummaryZh,
+  provenanceSummaryZh,
+  qualityLabelZh,
+} from '@shared/domain/provenance';
 import { cn, RISK_STYLES, formatTemp } from '@/lib/utils';
 import { Card, CardContent, Progress } from '@/components/ui';
 
@@ -219,15 +231,78 @@ export function TrendIcon({
 }
 
 // ---------------------------------------------------------------------------
+// Data quality
+// ---------------------------------------------------------------------------
+
+const QUALITY_STYLES: Record<DataQuality, { badge: string; dot: string }> = {
+  LIVE: { badge: 'bg-risk-low-bg text-risk-low border-risk-low-border', dot: 'bg-risk-low' },
+  RECENT: { badge: 'bg-muted text-muted-foreground border-border', dot: 'bg-muted-foreground' },
+  STALE: {
+    badge: 'bg-risk-medium-bg text-risk-medium border-risk-medium-border',
+    dot: 'bg-risk-medium',
+  },
+  OFFLINE: {
+    badge: 'bg-risk-high-bg text-risk-high border-risk-high-border',
+    dot: 'bg-risk-high',
+  },
+};
+
+/** How old a value is, in the plainest Chinese that is still accurate. */
+export function formatAgeZh(ageSec: number): string {
+  if (ageSec < 60) return `${Math.max(0, Math.round(ageSec))} 秒前`;
+  if (ageSec < 3600) return `${Math.round(ageSec / 60)} 分鐘前`;
+  if (ageSec < 86400) return `${Math.round(ageSec / 3600)} 小時前`;
+  return `${Math.round(ageSec / 86400)} 天前`;
+}
+
+/**
+ * Freshness of one measured value.
+ *
+ * The server decides the quality band; this component only renders it. That
+ * matters because a caregiver screen and the resident's own screen must never
+ * disagree about whether a number can be trusted.
+ */
+export function DataQualityBadge({
+  quality,
+  ageSec,
+  className,
+}: {
+  quality: DataQuality;
+  ageSec?: number;
+  className?: string;
+}) {
+  const style = QUALITY_STYLES[quality];
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium',
+        style.badge,
+        className,
+      )}
+    >
+      <span className={cn('size-1.5 rounded-full', style.dot)} aria-hidden />
+      {qualityLabelZh(quality)}
+      {ageSec !== undefined && quality !== 'LIVE' && (
+        <span className="tabular font-normal opacity-80">{formatAgeZh(ageSec)}</span>
+      )}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Metric tile
 // ---------------------------------------------------------------------------
 
 /**
  * A single live reading.
  *
- * `stale` matters: when the responsible sensor is offline the platform holds
- * the last value rather than inventing one, and the tile must say so rather
- * than presenting an old number as current.
+ * Pass `provenance` wherever it is available: it carries the server's own
+ * verdict on where the number came from and how old it is. When the feeding
+ * sensor is down the platform holds the last value rather than inventing one,
+ * and the tile then says so instead of presenting an old number as current.
+ *
+ * `stale` remains for the few call sites that show a value with no per-field
+ * provenance behind it, such as derived aggregates.
  */
 export function MetricTile({
   label,
@@ -237,6 +312,7 @@ export function MetricTile({
   icon: Icon,
   tone = 'neutral',
   stale = false,
+  provenance,
   className,
 }: {
   label: string;
@@ -246,6 +322,7 @@ export function MetricTile({
   icon?: React.ComponentType<{ className?: string }>;
   tone?: 'neutral' | 'low' | 'medium' | 'high';
   stale?: boolean;
+  provenance?: FieldProvenance;
   className?: string;
 }) {
   const tones = {
@@ -255,17 +332,35 @@ export function MetricTile({
     high: 'text-risk-high',
   };
 
+  const quality = provenance?.quality;
+  const degraded = quality ? quality !== 'LIVE' && quality !== 'RECENT' : stale;
+  const estimated = provenance?.origin === 'DEFAULT';
+
+  // Prefer the server's own note over anything the page could infer.
+  const note =
+    provenance?.noteZh ??
+    (stale && !provenance ? '感測器離線，數值未更新' : undefined);
+
   return (
     <div
       className={cn(
         'rounded-lg border border-border bg-card p-4 transition-shadow hover:shadow-card-hover',
-        stale && 'opacity-70',
+        degraded && 'opacity-70',
         className,
       )}
     >
       <div className="flex items-center gap-2 text-muted-foreground">
         {Icon && <Icon className="size-4 shrink-0" />}
         <span className="truncate text-xs font-medium">{label}</span>
+        {quality && quality !== 'LIVE' ? (
+          <DataQualityBadge quality={quality} ageSec={provenance?.ageSec} className="ml-auto" />
+        ) : (
+          estimated && (
+            <span className="ml-auto rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              推估
+            </span>
+          )
+        )}
       </div>
 
       <div className="mt-2 flex items-baseline gap-1">
@@ -275,11 +370,52 @@ export function MetricTile({
         {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
       </div>
 
-      {stale ? (
-        <p className="mt-1.5 text-xs font-medium text-risk-medium">感測器離線，數值未更新</p>
+      {note ? (
+        <p className={cn('mt-1.5 text-xs', degraded ? 'font-medium text-risk-medium' : 'text-muted-foreground')}>
+          {note}
+        </p>
       ) : (
         sublabel && <p className="mt-1.5 truncate text-xs text-muted-foreground">{sublabel}</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * One line telling the reader whether the assessment rests on current data.
+ *
+ * Renders nothing when everything is live - a banner that is always present
+ * stops being read, and there is nothing to warn about.
+ */
+export function DataQualitySummary({
+  provenance,
+  className,
+}: {
+  provenance: ReadingProvenance;
+  className?: string;
+}) {
+  const summary = provenanceSummaryZh(provenance);
+  const estimated = estimatedSummaryZh(provenance);
+  if (!summary && !estimated) return null;
+
+  const severe = provenance.worstQuality === 'OFFLINE' || provenance.worstQuality === 'STALE';
+
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-3 rounded-lg border p-3',
+        severe && summary
+          ? 'border-risk-medium-border bg-risk-medium-bg text-risk-medium'
+          : 'border-border bg-muted/50 text-muted-foreground',
+        className,
+      )}
+      role="status"
+    >
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+      <div className="space-y-1 text-xs leading-relaxed">
+        {summary && <p>{summary}</p>}
+        {estimated && <p className={cn(summary && 'opacity-80')}>{estimated}</p>}
+      </div>
     </div>
   );
 }

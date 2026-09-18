@@ -84,6 +84,7 @@ import {
   tickReadings,
 } from '@shared/domain/simulationEngine';
 import { calculateHeatIndex, clamp, round1 } from '@shared/domain/heatIndex';
+import { buildProvenance } from '@shared/domain/provenance';
 import { cloneDefaultActionRules, cloneDefaultConfig } from '@shared/domain/config';
 import {
   mayContributeToCityStats,
@@ -553,6 +554,14 @@ export class DemoBackend {
   }): RiskAssessment {
     const { user, baseline, reading, history, previousLevel } = args;
 
+    const userDevices = this.devices.filter((d) => d.userId === user.id);
+
+    const provenance = buildProvenance({
+      reading,
+      devices: userDevices,
+      simulated: reading.simulated,
+    });
+
     const core = assessRisk({
       userId: user.id,
       reading,
@@ -560,9 +569,8 @@ export class DemoBackend {
       config: this.config,
       history,
       previousLevel,
+      provenance,
     });
-
-    const userDevices = this.devices.filter((d) => d.userId === user.id);
     const caregivers = this.caregivers.filter(
       (c) => c.status === 'ACTIVE' && c.assignedUserIds.includes(user.id),
     );
@@ -617,7 +625,20 @@ export class DemoBackend {
     }
 
     for (const runtime of this.runtimes.values()) {
-      if (runtime.user.status !== 'ACTIVE') continue;
+      // Same rule as the server: no risk evaluation for an unmonitored
+      // resident, but their data age is still reported truthfully.
+      if (runtime.user.status !== 'ACTIVE') {
+        runtime.assessment = {
+          ...runtime.assessment,
+          provenance: buildProvenance({
+            reading: runtime.reading,
+            devices: this.devices.filter((d) => d.userId === runtime.user.id),
+            simulated: runtime.reading.simulated,
+            monitored: false,
+          }),
+        };
+        continue;
+      }
 
       const isFocus = runtime.user.id === this.simulation.focusUserId;
 
@@ -672,6 +693,7 @@ export class DemoBackend {
       }
     }
 
+    this.touchReportingDevices();
     this.escalateUnacknowledgedAlerts();
     this.updateCityRisk();
     this.broadcast();
@@ -682,6 +704,27 @@ export class DemoBackend {
    * as the server so the two backends cannot disagree about when an
    * unanswered emergency gets chased.
    */
+  /**
+   * Mirror of the server's device heartbeat: an online sensor that just
+   * reported was, in fact, just seen. The age of a held value is measured
+   * against this, so leaving it at its seeded value would make a sensor that
+   * dropped out moments ago look a day stale.
+   */
+  private touchReportingDevices(): void {
+    const now = new Date().toISOString();
+    const monitored = new Set(
+      [...this.runtimes.values()]
+        .filter((r) => r.user.status === 'ACTIVE')
+        .map((r) => r.user.id),
+    );
+
+    for (const device of this.devices) {
+      if (device.isActuator || device.status !== 'ONLINE') continue;
+      if (!monitored.has(device.userId)) continue;
+      device.lastSeen = now;
+    }
+  }
+
   private escalateUnacknowledgedAlerts(): void {
     const now = new Date();
 

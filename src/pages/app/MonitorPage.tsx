@@ -53,6 +53,8 @@ import {
   EmptyState,
   LiveIndicator,
   MetricTile,
+  DataQualityBadge,
+  DataQualitySummary,
   RiskBadge,
   StatusIndicator,
 } from '@/components/domain/RiskIndicators';
@@ -64,6 +66,8 @@ import {
   HumidityChart,
 } from '@/components/domain/Charts';
 import { DataTable, type Column } from '@/components/domain/DataTable';
+import { originLabelZh } from '@shared/domain/provenance';
+import type { FieldProvenance, MeasurementField } from '@shared/types/domain';
 
 // ---------------------------------------------------------------------------
 // Reading provenance
@@ -77,8 +81,11 @@ interface ReadingRow {
   /** Where the number came from - a device, a city feed, or the engine. */
   sourceZh: string;
   device: Device | null;
-  /** The feeding device is offline or disabled, so the value is held. */
-  stale: boolean;
+  /**
+   * The server's own verdict on this value. Absent for derived numbers such
+   * as the heat index, which is computed rather than measured.
+   */
+  provenance: FieldProvenance | null;
   at: string;
   simulated: boolean;
 }
@@ -87,8 +94,9 @@ function deviceOfType(devices: Device[], type: DeviceType): Device | null {
   return devices.find((d) => d.type === type) ?? null;
 }
 
-function isDown(device: Device | null): boolean {
-  return Boolean(device && (device.status === 'OFFLINE' || device.status === 'DISABLED'));
+/** A value is "held" when the platform is showing the last successful reading. */
+function isHeld(row: ReadingRow): boolean {
+  return row.provenance?.quality === 'OFFLINE' || row.provenance?.quality === 'STALE';
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +226,17 @@ export default function MonitorPage() {
   const label = (device: Device | null, fallback: string) =>
     device ? `${DEVICE_LABELS_ZH[device.type] ?? device.nameZh} · ${device.deviceId}` : fallback;
 
+  /**
+   * Freshness comes from the server, not from this page.
+   *
+   * The risk engine already decided which fields are live, held or stale when
+   * it built this assessment. Re-deriving that from device status here would
+   * let the monitor screen disagree with the decision the engine actually
+   * acted on.
+   */
+  const prov = (field: MeasurementField): FieldProvenance | null =>
+    assessment.provenance?.fields?.[field] ?? null;
+
   const rows: ReadingRow[] = [
     {
       key: 'indoorTemp',
@@ -226,8 +245,8 @@ export default function MonitorPage() {
       unit: '°C',
       sourceZh: label(tempDevice, '無對應裝置'),
       device: tempDevice,
-      stale: isDown(tempDevice),
-      at: readings.timestamp,
+      provenance: prov('indoorTempC'),
+      at: prov('indoorTempC')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -237,8 +256,8 @@ export default function MonitorPage() {
       unit: '%',
       sourceZh: label(humidityDevice, '無對應裝置'),
       device: humidityDevice,
-      stale: isDown(humidityDevice),
-      at: readings.timestamp,
+      provenance: prov('indoorHumidityPct'),
+      at: prov('indoorHumidityPct')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -248,8 +267,8 @@ export default function MonitorPage() {
       unit: '°C',
       sourceZh: '城市氣象資料源',
       device: null,
-      stale: false,
-      at: readings.timestamp,
+      provenance: prov('outdoorTempC'),
+      at: prov('outdoorTempC')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -259,8 +278,8 @@ export default function MonitorPage() {
       unit: '%',
       sourceZh: '城市氣象資料源',
       device: null,
-      stale: false,
-      at: readings.timestamp,
+      provenance: prov('outdoorHumidityPct'),
+      at: prov('outdoorHumidityPct')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -270,7 +289,9 @@ export default function MonitorPage() {
       unit: '°C',
       sourceZh: '風險引擎計算（溫度 × 濕度）',
       device: null,
-      stale: false,
+      // Derived, not measured: it inherits the freshness of its inputs, which
+      // the two temperature rows already state.
+      provenance: null,
       at: assessment.timestamp,
       simulated: readings.simulated,
     },
@@ -281,8 +302,8 @@ export default function MonitorPage() {
       unit: '',
       sourceZh: label(airDevice, '城市空品資料源'),
       device: airDevice,
-      stale: isDown(airDevice),
-      at: readings.timestamp,
+      provenance: prov('airQualityIndex'),
+      at: prov('airQualityIndex')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -292,8 +313,8 @@ export default function MonitorPage() {
       unit: 'BPM',
       sourceZh: label(watchDevice, '無對應裝置'),
       device: watchDevice,
-      stale: isDown(watchDevice),
-      at: readings.timestamp,
+      provenance: prov('heartRateBpm'),
+      at: prov('heartRateBpm')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -303,8 +324,8 @@ export default function MonitorPage() {
       unit: '°C',
       sourceZh: label(watchDevice, '無對應裝置'),
       device: watchDevice,
-      stale: isDown(watchDevice),
-      at: readings.timestamp,
+      provenance: prov('skinTempC'),
+      at: prov('skinTempC')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -314,8 +335,8 @@ export default function MonitorPage() {
       unit: '步/時',
       sourceZh: label(watchDevice, '無對應裝置'),
       device: watchDevice,
-      stale: isDown(watchDevice),
-      at: readings.timestamp,
+      provenance: prov('activityStepsPerHour'),
+      at: prov('activityStepsPerHour')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
     {
@@ -325,8 +346,8 @@ export default function MonitorPage() {
       unit: '天',
       sourceZh: '城市氣象資料源',
       device: null,
-      stale: false,
-      at: readings.timestamp,
+      provenance: prov('heatwaveDays'),
+      at: prov('heatwaveDays')?.observedAt ?? readings.timestamp,
       simulated: readings.simulated,
     },
   ];
@@ -340,7 +361,7 @@ export default function MonitorPage() {
       cell: (row) => (
         <div className="flex items-center gap-2">
           <span className="font-medium">{row.metricZh}</span>
-          {row.stale && (
+          {isHeld(row) && (
             <Badge variant="warning" className="text-[10px]">
               數值已保留
             </Badge>
@@ -354,7 +375,7 @@ export default function MonitorPage() {
       align: 'right',
       sortValue: (row) => Number(row.value.replace(/,/g, '')) || 0,
       cell: (row) => (
-        <span className={cn('tabular font-semibold', row.stale && 'text-muted-foreground')}>
+        <span className={cn('tabular font-semibold', isHeld(row) && 'text-muted-foreground')}>
           {row.value}
           {row.unit && <span className="ml-1 text-xs font-normal text-muted-foreground">{row.unit}</span>}
         </span>
@@ -389,7 +410,7 @@ export default function MonitorPage() {
     },
     {
       key: 'at',
-      header: '更新時間',
+      header: '量測時間',
       hideOnMobile: true,
       sortValue: (row) => row.at,
       cell: (row) => (
@@ -400,17 +421,26 @@ export default function MonitorPage() {
       ),
     },
     {
-      key: 'provenance',
-      header: '資料性質',
-      cell: (row) => (
-        <Badge variant={row.simulated ? 'muted' : 'success'} className="font-mono text-[10px]">
-          {row.simulated ? 'SIMULATED' : 'LIVE'}
-        </Badge>
-      ),
+      key: 'quality',
+      header: '數值新鮮度',
+      sortValue: (row) => row.provenance?.ageSec ?? 0,
+      cell: (row) =>
+        row.provenance ? (
+          <div className="flex flex-col items-start gap-1">
+            <DataQualityBadge quality={row.provenance.quality} ageSec={row.provenance.ageSec} />
+            <span className="text-[10px] text-muted-foreground">
+              {originLabelZh(row.provenance.origin)}
+            </span>
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">計算值</span>
+        ),
     },
   ];
 
-  const downDevices = devices.filter((d) => isDown(d));
+  const downDevices = devices.filter(
+    (d) => d.status === 'OFFLINE' || d.status === 'DISABLED',
+  );
 
   return (
     <div className="space-y-8">
@@ -434,6 +464,10 @@ export default function MonitorPage() {
             本原型的感測數值由伺服器端的模擬引擎產生，並未連接真實硬體。裝置狀態、數值保留邏輯與風險判讀則依照真實流程運作。
           </p>
         </div>
+      )}
+
+      {assessment.provenance && (
+        <DataQualitySummary provenance={assessment.provenance} />
       )}
 
       {downDevices.length > 0 && (
@@ -461,7 +495,7 @@ export default function MonitorPage() {
             unit="°C"
             icon={Thermometer}
             sublabel={label(tempDevice, '無對應裝置')}
-            stale={isDown(tempDevice)}
+            provenance={prov('indoorTempC') ?? undefined}
           />
           <MetricTile
             label="室內濕度"
@@ -469,7 +503,7 @@ export default function MonitorPage() {
             unit="%"
             icon={Droplet}
             sublabel={label(humidityDevice, '無對應裝置')}
-            stale={isDown(humidityDevice)}
+            provenance={prov('indoorHumidityPct') ?? undefined}
           />
           <MetricTile
             label="室外溫度"
@@ -477,6 +511,7 @@ export default function MonitorPage() {
             unit="°C"
             icon={Sun}
             sublabel="城市氣象資料源"
+            provenance={prov('outdoorTempC') ?? undefined}
           />
           <MetricTile
             label="熱指數"
@@ -498,7 +533,7 @@ export default function MonitorPage() {
             unit="BPM"
             icon={Heart}
             sublabel={`平常 ${assessment.baseline.range.min}–${assessment.baseline.range.max} BPM`}
-            stale={isDown(watchDevice)}
+            provenance={prov('heartRateBpm') ?? undefined}
             tone={assessment.baseline.aboveBaseline ? 'high' : 'low'}
           />
           <MetricTile
@@ -507,7 +542,7 @@ export default function MonitorPage() {
             unit="°C"
             icon={Thermometer}
             sublabel={label(watchDevice, '無對應裝置')}
-            stale={isDown(watchDevice)}
+            provenance={prov('skinTempC') ?? undefined}
           />
           <MetricTile
             label="活動量"
@@ -515,14 +550,14 @@ export default function MonitorPage() {
             unit="步/時"
             icon={Footprints}
             sublabel={label(watchDevice, '無對應裝置')}
-            stale={isDown(watchDevice)}
+            provenance={prov('activityStepsPerHour') ?? undefined}
           />
           <MetricTile
             label="空氣品質 AQI"
             value={formatNumber(readings.airQualityIndex)}
             icon={Wind}
             sublabel={label(airDevice, '城市空品資料源')}
-            stale={isDown(airDevice)}
+            provenance={prov('airQualityIndex') ?? undefined}
           />
         </div>
       </section>

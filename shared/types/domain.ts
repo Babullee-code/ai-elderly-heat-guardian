@@ -77,6 +77,8 @@ export interface RiskAssessment {
   recovered: boolean;
   /** Snapshot of readings the assessment was computed from. */
   readings: ReadingSnapshot;
+  /** How fresh and trustworthy each of those readings is. */
+  provenance: ReadingProvenance;
   /** Monitoring cadence the policy engine selected, in seconds. */
   monitoringIntervalSec: number;
 }
@@ -272,6 +274,83 @@ export interface ReadingSnapshot {
   /** True when values are simulated rather than from real hardware. */
   simulated: boolean;
   timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Data provenance
+// ---------------------------------------------------------------------------
+
+/**
+ * How fresh a single measurement is.
+ *
+ * Distinguishing these matters more here than in most products: a monitoring
+ * console that shows a four-minute-old heart rate as though it were current is
+ * worse than one that shows nothing, because a caregiver will act on it.
+ */
+export type DataQuality = 'LIVE' | 'RECENT' | 'STALE' | 'OFFLINE';
+
+/** Where a single measurement came from. */
+export type DataOrigin =
+  /** A household sensor or wearable reported it. */
+  | 'DEVICE'
+  /** An external weather service supplied it. */
+  | 'WEATHER_API'
+  /** The simulator produced it - no real hardware is attached. */
+  | 'SIMULATOR'
+  /** The source went quiet; this is the last value it gave, not a new one. */
+  | 'HELD'
+  /** No source exists for this field; a population default is standing in. */
+  | 'DEFAULT';
+
+/**
+ * The nine measured fields of a ReadingSnapshot.
+ *
+ * Deliberately excludes `simulated` and `timestamp`, which are metadata about
+ * the snapshot rather than measurements that can go stale independently.
+ */
+export type MeasurementField =
+  | 'indoorTempC'
+  | 'indoorHumidityPct'
+  | 'outdoorTempC'
+  | 'outdoorHumidityPct'
+  | 'airQualityIndex'
+  | 'heartRateBpm'
+  | 'activityStepsPerHour'
+  | 'skinTempC'
+  | 'heatwaveDays';
+
+export interface FieldProvenance {
+  field: MeasurementField;
+  origin: DataOrigin;
+  quality: DataQuality;
+  /** When the SOURCE produced this value - not when the snapshot was built. */
+  observedAt: string;
+  ageSec: number;
+  deviceId?: string;
+  deviceName?: string;
+  simulated: boolean;
+  /** Plain-language reason this field is not live, shown to the user. */
+  noteZh?: string;
+  note?: string;
+}
+
+/**
+ * Per-field provenance for one ReadingSnapshot.
+ *
+ * Carried ALONGSIDE the snapshot rather than inside it, so `ReadingSnapshot`
+ * keeps its shape and the risk engine signature is unchanged. The engine scores
+ * the numbers; this describes how much they can be trusted.
+ */
+export interface ReadingProvenance {
+  at: string;
+  fields: Record<MeasurementField, FieldProvenance>;
+  /** The worst quality across every field - the headline for the UI. */
+  worstQuality: DataQuality;
+  /** Fields with no sensor behind them, estimated from the environment model. */
+  estimatedFields: MeasurementField[];
+  /** Fields that are held, stale or offline. */
+  degradedFields: MeasurementField[];
+  anySimulated: boolean;
 }
 
 export interface EnvironmentReading {

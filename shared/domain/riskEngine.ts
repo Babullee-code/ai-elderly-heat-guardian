@@ -11,6 +11,7 @@
  */
 
 import type {
+  ReadingProvenance,
   AIExplanation,
   AIExplanationLine,
   BaselineEvaluation,
@@ -30,6 +31,7 @@ import {
   evaluateBaseline,
 } from './baselineEngine.js';
 import { calculateDewPoint, calculateHeatIndex, clamp, normalise, round1 } from './heatIndex.js';
+import { defaultProvenance } from './provenance.js';
 
 // ---------------------------------------------------------------------------
 // Individual factor calculations
@@ -465,6 +467,14 @@ export interface AssessRiskArgs {
   config: RiskRuleConfig;
   history: RiskHistoryPoint[];
   previousLevel: RiskLevel | null;
+  /**
+   * Per-field data provenance.
+   *
+   * Optional so the engine can be exercised without device context - a unit
+   * test cares about scoring, not freshness. When omitted, everything is
+   * reported as simulated and live, which is what a synthetic reading is.
+   */
+  provenance?: ReadingProvenance;
 }
 
 /**
@@ -474,6 +484,7 @@ export interface AssessRiskArgs {
  */
 export function assessRisk(args: AssessRiskArgs): Omit<RiskAssessment, 'actions'> {
   const { userId, reading, baseline, config, history, previousLevel } = args;
+  const provenance = args.provenance ?? defaultProvenance(reading);
 
   const { factors, baselineEval, heatIndex } = buildRiskFactors({ reading, baseline, config });
   const score = calculateTotalRisk(factors);
@@ -503,6 +514,7 @@ export function assessRisk(args: AssessRiskArgs): Omit<RiskAssessment, 'actions'
     escalated: previousLevel !== null && RISK_ORDER[level] > RISK_ORDER[previousLevel],
     recovered: previousLevel !== null && RISK_ORDER[level] < RISK_ORDER[previousLevel],
     readings: reading,
+    provenance,
     monitoringIntervalSec: config.monitoringIntervalSec[level],
   };
 }

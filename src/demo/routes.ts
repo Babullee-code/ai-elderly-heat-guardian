@@ -11,6 +11,7 @@
  * merely described.
  */
 
+import { isHeldQuality, primaryFieldForDevice } from '@shared/domain/provenance';
 import type {
   ActionRule,
   Alert,
@@ -39,7 +40,7 @@ import { buildTemplateVars, interpolate } from '@shared/domain/notificationEngin
 import { PHASE_LABELS, SCENARIOS, scenarioDurationSec } from '@shared/domain/simulationEngine';
 import { learnPersonalBaseline } from '@shared/domain/baselineEngine';
 import { cloneDefaultConfig } from '@shared/domain/config';
-import type { ScenarioName } from '@shared/types/domain';
+import type { DataQuality, ScenarioName } from '@shared/types/domain';
 
 import { demoBackend as db } from './backend';
 
@@ -757,15 +758,27 @@ route('GET', '/sensors', (ctx) => {
                 ? r.heartRateBpm
                 : (runtime?.assessment.heatIndex ?? 0);
 
+      // Same rule as the server: freshness is whatever the risk engine used.
+      const field = primaryFieldForDevice(device.type);
+      const provenance = field
+        ? runtime?.assessment.provenance?.fields?.[field]
+        : undefined;
+      const quality: DataQuality =
+        provenance?.quality ??
+        (device.status === 'OFFLINE' || device.status === 'DISABLED' ? 'OFFLINE' : 'LIVE');
+
       return {
         device,
         userName: byId.get(device.userId)?.name ?? 'Unknown',
         metric: metricFor(device.type),
         value,
         unit: unitFor(device.type),
-        stale: device.status === 'OFFLINE' || device.status === 'DISABLED',
+        quality,
+        ageSec: provenance?.ageSec ?? null,
+        origin: provenance?.origin ?? null,
+        stale: isHeldQuality(quality),
         lastSeen: device.lastSeen,
-        simulated: true,
+        simulated: provenance?.simulated ?? true,
       };
     });
 

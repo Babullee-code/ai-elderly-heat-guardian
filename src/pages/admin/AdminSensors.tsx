@@ -24,6 +24,7 @@ import type { RiskAssessment, RiskHistoryPoint, SensorMetric } from '@shared/typ
 import { api, ApiError, type SensorRow } from '@/lib/api';
 import { useLiveStore } from '@/store/live';
 import { cn, DEVICE_LABELS_ZH, DEVICE_STATUS_ZH, formatNumber, timeAgo } from '@/lib/utils';
+import { originLabelZh } from '@shared/domain/provenance';
 import {
   Badge,
   Button,
@@ -40,7 +41,12 @@ import {
   Skeleton,
 } from '@/components/ui';
 import { PageHeader, StatCard } from '@/components/domain/Cards';
-import { EmptyState, RiskBadge, StatusIndicator } from '@/components/domain/RiskIndicators';
+import {
+  DataQualityBadge,
+  EmptyState,
+  RiskBadge,
+  StatusIndicator,
+} from '@/components/domain/RiskIndicators';
 import { DataTable, type Column } from '@/components/domain/DataTable';
 import {
   ChartCard,
@@ -206,18 +212,15 @@ export default function AdminSensors() {
     {
       key: 'freshness',
       header: '資料狀態',
-      sortValue: (row) => (row.stale ? 1 : 0),
-      cell: (row) =>
-        row.stale ? (
-          <Badge variant="warning" className="text-[10px]">
-            <AlertTriangle className="size-3" />
-            未更新
-          </Badge>
-        ) : (
-          <Badge variant="success" className="text-[10px]">
-            即時
-          </Badge>
-        ),
+      sortValue: (row) => row.ageSec ?? 0,
+      cell: (row) => (
+        <div className="flex flex-col items-start gap-1">
+          <DataQualityBadge quality={row.quality} ageSec={row.ageSec ?? undefined} />
+          {row.origin && (
+            <span className="text-[10px] text-muted-foreground">{originLabelZh(row.origin)}</span>
+          )}
+        </div>
+      ),
     },
     {
       key: 'status',
@@ -268,7 +271,7 @@ export default function AdminSensors() {
     <div className="space-y-6">
       <PageHeader
         title="感測器監控"
-        description="全平台感測器的即時讀值。離線的感測器會沿用最後一次的讀值，並明確標示為未更新。"
+        description="全平台感測器的即時讀值與新鮮度。離線的感測器會沿用最後一次的讀值，並標示為離線與其取得時間。"
       />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
