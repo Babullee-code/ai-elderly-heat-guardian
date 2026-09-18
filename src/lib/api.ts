@@ -300,6 +300,14 @@ export const api = {
     post<{ device: Device; action: string }>(`/devices/${id}/action`, { action }),
   deleteDevice: (id: string) => del<{ deleted: boolean }>(`/devices/${id}`),
 
+  /**
+   * Issue an ingest key. The `key` in this response is the only copy that
+   * will ever exist outside the device - the server keeps only its hash.
+   */
+  issueIngestKey: (id: string) =>
+    post<{ device: Device; key: string; messageZh: string }>(`/devices/${id}/ingest-key`, {}),
+  revokeIngestKey: (id: string) => del<{ device: Device }>(`/devices/${id}/ingest-key`),
+
   // --- smart home ---------------------------------------------------------
   setAppliance: (userId: string, appliance: 'ac' | 'fan' | 'dehumidifier', on: boolean) =>
     post<{ smartHome: SmartHomeState }>(`/devices/smart-home/${userId}`, { appliance, on }),

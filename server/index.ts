@@ -33,6 +33,7 @@ import {
   settingsRouter,
   systemRouter,
 } from './routes/system.js';
+import { ingestRouter } from './routes/ingest.js';
 import { simulationRouter } from './routes/simulation.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -91,6 +92,8 @@ app.use('/api/data-sources', dataSourcesRouter);
 app.use('/api/system', systemRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/audit-log', auditRouter);
+// Device-authenticated, deliberately outside the console's account auth.
+app.use('/api/ingest', ingestRouter);
 app.use('/api/simulation', simulationRouter);
 
 app.use('/api', notFound);

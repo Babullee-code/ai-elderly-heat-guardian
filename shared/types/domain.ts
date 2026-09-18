@@ -621,6 +621,24 @@ export interface Device {
   /** True for AC / fan / dehumidifier. */
   isActuator: boolean;
   createdAt: string;
+
+  /**
+   * First characters of this device's ingest key, or null if it has none.
+   *
+   * The key itself is never stored or returned - only its hash, server side.
+   * This prefix exists so an operator can tell two keys apart without the
+   * console ever holding a usable credential.
+   */
+  ingestKeyPrefix?: string | null;
+  ingestKeyIssuedAt?: string | null;
+  /**
+   * When this device last posted a real reading.
+   *
+   * Once set, the simulator stops standing in for this device: a real sensor
+   * that has gone quiet must read as offline rather than be replaced by
+   * invented data that looks just as plausible.
+   */
+  lastIngestAt?: string | null;
 }
 
 /** Live smart-home state derived from actuator devices. */

@@ -129,6 +129,10 @@ function mapDevice(row: DeviceRow): Device {
     power: row.power,
     isActuator: row.isActuator,
     createdAt: iso(row.createdAt),
+    // Never the key itself - only enough to identify which key is installed.
+    ingestKeyPrefix: row.ingestKeyPrefix,
+    ingestKeyIssuedAt: row.ingestKeyIssuedAt ? iso(row.ingestKeyIssuedAt) : null,
+    lastIngestAt: row.lastIngestAt ? iso(row.lastIngestAt) : null,
   };
 }
 
@@ -457,6 +461,41 @@ export const deviceRepo = {
       },
     });
     return mapDevice(row);
+  },
+
+  /**
+   * Find a device by the hash of the key presented to the ingest endpoint.
+   *
+   * Lookup is BY HASH, so a stolen database yields no working credential and
+   * the raw key never has to be held anywhere in order to authenticate.
+   */
+  async findByIngestKeyHash(hash: string): Promise<Device | null> {
+    const row = await prisma.device.findFirst({ where: { ingestKeyHash: hash } });
+    return row ? mapDevice(row) : null;
+  },
+
+  /** Install a new key, replacing any existing one. */
+  async setIngestKey(
+    id: string,
+    key: { hash: string; prefix: string } | null,
+  ): Promise<Device> {
+    const row = await prisma.device.update({
+      where: { id },
+      data: {
+        ingestKeyHash: key?.hash ?? null,
+        ingestKeyPrefix: key?.prefix ?? null,
+        ingestKeyIssuedAt: key ? new Date() : null,
+      },
+    });
+    return mapDevice(row);
+  },
+
+  /** Record that a device has posted a real reading. */
+  async markIngested(id: string, at: Date): Promise<void> {
+    await prisma.device.update({
+      where: { id },
+      data: { lastIngestAt: at, lastSeen: at, status: 'ONLINE' },
+    });
   },
 
   async update(id: string, patch: Partial<Device>): Promise<Device> {

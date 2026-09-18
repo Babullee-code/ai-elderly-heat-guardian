@@ -82,9 +82,64 @@ the reason rather than treating it as an error.
 | PATCH | `/:id` | `device:write` | |
 | POST | `/:id/action` | `device:write` | `configure` \| `reconnect` \| `disable` \| `enable` \| `toggle-power` |
 | DELETE | `/:id` | `device:write` | |
+| POST | `/:id/ingest-key` | `device:write` | Issues or rotates the device's ingest key. **The key is in this response and nowhere else.** |
+| DELETE | `/:id/ingest-key` | `device:write` | Revokes it |
 | POST | `/smart-home/:userId` | scope | `{ appliance, on }` |
 | POST | `/smart-home/:userId/cancel-automation` | scope | Cancels auto-cooling for this episode |
 | POST | `/smart-home/:userId/restore-automation` | scope | |
+
+## Ingest — `/api/ingest`
+
+The door real hardware comes in through. **Authenticated per device, not per
+person**: a sensor presents its own key in `X-Device-Key`, and that key
+identifies exactly one device.
+
+Keys are stored as a SHA-256 hash and shown once, at issue. A copy of the
+database yields nothing replayable, and a lost key can only be replaced, which
+revokes the old one.
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| POST | `/readings` | `X-Device-Key` | `{ readings: { field: value }, observedAt? }` |
+| GET | `/self` | `X-Device-Key` | What this device may report, and the accepted ranges |
+
+```bash
+curl -X POST http://localhost:4000/api/ingest/readings \
+  -H "X-Device-Key: hgk_..." \
+  -H "Content-Type: application/json" \
+  -d '{"readings":{"indoorTempC":34.2}}'
+```
+
+### What is refused
+
+A device may post only the fields its hardware measures, only for its own
+resident, and only values that could be real. Each rejection names itself:
+
+| Code | Meaning |
+|---|---|
+| `FIELD_NOT_PERMITTED` | A thermometer may not report a heart rate |
+| `OUT_OF_RANGE` | Outside physical plausibility — evidence of a broken sensor, not a dangerous room |
+| `UNKNOWN_FIELD` | Not a measurement this platform records |
+| `NOT_A_NUMBER` | |
+| `TOO_OLD` | Older than 15 minutes; a short backlog is fine, yesterday's temperature is not the present |
+| `IN_FUTURE` | Beyond 60s of clock skew |
+
+**Partial acceptance is deliberate.** A watch posting a good heart rate and a
+nonsense skin temperature has the heart rate used and the skin temperature
+refused, and the response is **202** listing what did not make it. Rejecting the
+whole batch would discard a genuine reading because of an unrelated fault.
+
+### After a device becomes real
+
+Posting once changes the device permanently:
+
+- Its measurements outrank the simulator (priority 10 vs 50).
+- The value corrects the simulated household, so a real 41.5 °C drives heart
+  rate in the coupled model rather than only appearing on screen.
+- **The simulator never stands in for it again.** If it falls silent past the
+  10-minute validity window, its values are held and marked `OFFLINE` —
+  filling the gap with a simulated number that looks exactly like a measurement
+  would hide a failed sensor in someone's home.
 
 ## Sensors & readings
 

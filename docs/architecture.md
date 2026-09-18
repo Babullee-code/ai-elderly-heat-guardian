@@ -79,6 +79,7 @@ Imported verbatim by both the server and the browser. Pure functions, no I/O.
 | `notificationEngine.ts` | Template interpolation |
 | `provenance.ts` | Per-field origin and freshness: the only place staleness is decided |
 | `inputSources.ts` | Input sources and the assembler that builds one reading from them |
+| `ingest.ts` | Validation, the real-device source, and assimilation of real values |
 | `permissions.ts` | Role → permission table |
 | `config.ts` | **The only hard-coded thresholds in the codebase** |
 
@@ -198,11 +199,16 @@ Sources are ranked; lower wins:
 
 | Priority | Source | Status |
 |---|---|---|
-| 10 | `INGEST` — a real device posting to the API | Phase 3 |
+| 10 | `INGEST` — a real device posting to the API | **in use** |
 | 20 | `WEATHER_PROVIDER` — a connected weather service | Phase 4 |
 | 50 | `SIMULATED_DEVICE` — the simulator standing in for hardware | in use |
 | 55 | `SIMULATED_WEATHER` | in use |
 | 90 | `ENVIRONMENT_MODEL` — inference for fields nothing measures | in use |
+
+A device that has posted even once is treated as **real** from then on: the
+simulator stops standing in for it, so its silence reads as offline rather than
+being papered over. Issuing a key alone does not do this — a key is an
+intention, a posted reading is evidence.
 
 Three rules the assembler enforces:
 

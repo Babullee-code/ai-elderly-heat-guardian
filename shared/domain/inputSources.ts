@@ -232,18 +232,50 @@ export function environmentModelSource(userId: string): InputSource {
 }
 
 /**
+ * Anything that supplies measurements from outside this process.
+ *
+ * Passed in rather than imported so this module keeps no opinion about where
+ * real data comes from - an HTTP endpoint today, a message queue later.
+ */
+export interface ExternalSources {
+  /** A source per device that reports for itself, keyed by `device.id`. */
+  byDeviceId: Map<string, InputSource>;
+  /**
+   * Devices that have posted real data at least once.
+   *
+   * The simulator must not stand in for these. A real sensor that has gone
+   * quiet has to read as offline; replacing it with a plausible invented
+   * number would hide the failure, which is the one outcome this layer exists
+   * to prevent.
+   */
+  realDeviceIds: Set<string>;
+}
+
+/**
  * The standard source set for one resident.
  *
  * Order is irrelevant - the assembler sorts by priority - but the set is
  * built here so every caller assembles a reading from the same inputs.
  */
-export function sourcesForResident(userId: string, devices: Device[]): InputSource[] {
+export function sourcesForResident(
+  userId: string,
+  devices: Device[],
+  external?: ExternalSources,
+): InputSource[] {
   const sources: InputSource[] = [];
 
   for (const device of devices) {
     if (device.isActuator) continue;
-    const source = simulatedDeviceSource(device);
-    if (source) sources.push(source);
+
+    const ingest = external?.byDeviceId.get(device.id);
+    if (ingest) sources.push(ingest);
+
+    // A device that has proved it can report for itself keeps that
+    // responsibility even while silent.
+    if (external?.realDeviceIds.has(device.id)) continue;
+
+    const simulated = simulatedDeviceSource(device);
+    if (simulated) sources.push(simulated);
   }
 
   sources.push(simulatedWeatherSource(userId));

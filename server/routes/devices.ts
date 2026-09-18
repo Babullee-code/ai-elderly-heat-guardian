@@ -25,6 +25,7 @@ import {
   primaryFieldForDevice,
 } from '../../shared/domain/provenance.js';
 import { deviceRepo, readingRepo, userRepo } from '../db/repositories.js';
+import { issueIngestKey } from './ingest.js';
 import { platformState } from '../services/platformState.js';
 import { asyncHandler, pathParam, recordAudit, validate } from '../middleware/common.js';
 import { requireAuth, requirePermission, requireUserScope } from '../middleware/auth.js';
@@ -394,6 +395,101 @@ devicesRouter.post(
     });
 
     res.json({ smartHome });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Ingest credentials
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/devices/:id/ingest-key
+ *
+ * Issue (or rotate) the key a real device uses to post its own readings.
+ *
+ * The key is returned in THIS RESPONSE AND NOWHERE ELSE. Only its hash is
+ * stored, so it cannot be looked up later, redisplayed, or recovered from a
+ * database copy - if it is lost the fix is to issue another one, which also
+ * revokes the old. That is the ordinary handling for a credential, and the
+ * console is written to match: it shows the key once and then only a prefix.
+ */
+devicesRouter.post(
+  '/:id/ingest-key',
+  requireAuth,
+  requirePermission('device:write'),
+  asyncHandler(async (req, res) => {
+    const device = await deviceRepo.findById(pathParam(req, 'id'));
+
+    if (!device) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'That device does not exist.' });
+      return;
+    }
+
+    if (device.isActuator) {
+      res.status(400).json({
+        error: 'NOT_A_SENSOR',
+        message: 'An actuator has nothing to report; it does not need an ingest key.',
+        messageZh: '此裝置為控制器，沒有可回報的量測值，不需要資料金鑰。',
+      });
+      return;
+    }
+
+    const issued = issueIngestKey();
+    const updated = await deviceRepo.setIngestKey(device.id, {
+      hash: issued.hash,
+      prefix: issued.prefix,
+    });
+
+    await platformState.reloadDevices();
+
+    // The audit trail records that a key was issued and by whom - never the
+    // key, which would defeat hashing it in the first place.
+    await recordAudit(req, {
+      action: `Issued an ingest key for ${device.deviceId}`,
+      actionZh: `為 ${device.deviceId} 產生資料回報金鑰`,
+      entity: 'Device',
+      entityId: device.id,
+    });
+
+    res.status(201).json({
+      device: updated,
+      /** Shown once. Not retrievable afterwards. */
+      key: issued.key,
+      messageZh: '請立即複製此金鑰，離開後將無法再次顯示。',
+    });
+  }),
+);
+
+/**
+ * DELETE /api/devices/:id/ingest-key
+ *
+ * Revoke a device's credential. It can no longer post; the simulator does not
+ * resume standing in for it if it has ever reported real data, so its values
+ * read as held rather than quietly reverting to invented ones.
+ */
+devicesRouter.delete(
+  '/:id/ingest-key',
+  requireAuth,
+  requirePermission('device:write'),
+  asyncHandler(async (req, res) => {
+    const device = await deviceRepo.findById(pathParam(req, 'id'));
+
+    if (!device) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'That device does not exist.' });
+      return;
+    }
+
+    const updated = await deviceRepo.setIngestKey(device.id, null);
+    await platformState.reloadDevices();
+
+    await recordAudit(req, {
+      action: `Revoked the ingest key for ${device.deviceId}`,
+      actionZh: `撤銷 ${device.deviceId} 的資料回報金鑰`,
+      entity: 'Device',
+      entityId: device.id,
+    });
+
+    res.json({ device: updated });
   }),
 );
 

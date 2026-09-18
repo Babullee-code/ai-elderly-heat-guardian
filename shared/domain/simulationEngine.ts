@@ -39,7 +39,12 @@ import type {
   SmartHomeState,
 } from '../types/domain.js';
 import { clamp, round1 } from './heatIndex.js';
-import { assembleReading, sourcesForResident } from './inputSources.js';
+import {
+  assembleReading,
+  sourcesForResident,
+  type ExternalSources,
+} from './inputSources.js';
+import { assimilate } from './ingest.js';
 
 /**
  * How far below outdoor temperature a domestic air conditioner can hold the
@@ -420,9 +425,14 @@ export interface TickResult {
  * level, and it never writes a value the sources did not produce.
  */
 export function tickHousehold(
-  args: TickArgs & { userId: string; previousProvenance?: ReadingProvenance },
+  args: TickArgs & {
+    userId: string;
+    previousProvenance?: ReadingProvenance;
+    /** Sources supplying data from outside this process. */
+    external?: ExternalSources;
+  },
 ): TickResult {
-  const household = advanceHousehold({
+  const modelled = advanceHousehold({
     profile: args.profile,
     baseline: args.baseline,
     previous: args.household ?? householdFromReading(args.previous),
@@ -431,10 +441,21 @@ export function tickHousehold(
     isFocus: args.isFocus,
   });
 
-  const sources = sourcesForResident(args.userId, args.devices);
+  const sources = sourcesForResident(args.userId, args.devices, args.external);
+  const reports = sources.map((source) => source.poll(modelled));
+
+  /**
+   * A real observation corrects the model rather than sitting beside it.
+   *
+   * Without this a real thermometer reporting 34C would change the screen and
+   * the risk score while the simulated room went on believing it was 27C - and
+   * heart rate, which the model drives from indoor temperature, would be
+   * computed from the wrong number.
+   */
+  const household = assimilate(modelled, reports);
 
   const { reading, provenance } = assembleReading({
-    reports: sources.map((source) => source.poll(household)),
+    reports,
     previous: args.previous,
     previousProvenance: args.previousProvenance,
   });

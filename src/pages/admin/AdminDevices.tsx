@@ -19,6 +19,7 @@ import {
   Droplet,
   Fan,
   Heart,
+  KeyRound,
   Plus,
   Power,
   RefreshCw,
@@ -195,6 +196,45 @@ export default function AdminDevices() {
       .catch(() => undefined);
   }, [creating, residents.length]);
 
+  /**
+   * The key-management dialog.
+   *
+   * `issuedKey` holds the one and only copy of a freshly minted key. It lives
+   * in component state and nowhere else - not in the store, not in a URL, and
+   * never fetched back from the server, which keeps only a hash. Closing the
+   * dialog discards it, which is why the dialog says so plainly.
+   */
+  const [keyFor, setKeyFor] = React.useState<DeviceRow | null>(null);
+  const [issuedKey, setIssuedKey] = React.useState<string | null>(null);
+
+  const issueKey = async (device: DeviceRow) => {
+    setBusy(true);
+    try {
+      const result = await api.issueIngestKey(device.id);
+      setIssuedKey(result.key);
+      toast.success(`已為 ${device.deviceId} 產生金鑰`, '請立即複製，離開後無法再次顯示。');
+      await load();
+    } catch (err) {
+      toast.error('無法產生金鑰', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeKey = async (device: DeviceRow) => {
+    setBusy(true);
+    try {
+      await api.revokeIngestKey(device.id);
+      setIssuedKey(null);
+      toast.success(`已撤銷 ${device.deviceId} 的金鑰`, '此裝置將無法再回報資料。');
+      await load();
+    } catch (err) {
+      toast.error('無法撤銷金鑰', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runAction = async (device: DeviceRow, action: string) => {
     setBusy(true);
     try {
@@ -288,6 +328,43 @@ export default function AdminDevices() {
       },
     },
     {
+      key: 'ingest',
+      header: '資料來源',
+      hideOnMobile: true,
+      sortValue: (row) => (row.lastIngestAt ? 2 : row.ingestKeyPrefix ? 1 : 0),
+      cell: (row) => {
+        if (row.isActuator) {
+          return <span className="text-xs text-muted-foreground">控制器</span>;
+        }
+
+        // Three genuinely different states, and the difference matters: only
+        // the third means a number on screen was measured by real hardware.
+        if (row.lastIngestAt) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <Badge variant="success" className="text-[10px]">實機回報</Badge>
+              <span className="text-[10px] text-muted-foreground">
+                最後回報 {timeAgo(row.lastIngestAt)}
+              </span>
+            </div>
+          );
+        }
+
+        if (row.ingestKeyPrefix) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <Badge variant="warning" className="text-[10px]">已發金鑰</Badge>
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {row.ingestKeyPrefix}…
+              </span>
+            </div>
+          );
+        }
+
+        return <Badge variant="muted" className="text-[10px]">模擬資料</Badge>;
+      },
+    },
+    {
       key: 'user',
       header: '長者',
       sortValue: (row) => row.userName,
@@ -354,6 +431,20 @@ export default function AdminDevices() {
           <Button size="sm" variant="ghost" onClick={() => setDetailId(row.id)}>
             詳細
           </Button>
+
+          {editable && !row.isActuator && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setIssuedKey(null);
+                setKeyFor(row);
+              }}
+            >
+              <KeyRound />
+              金鑰
+            </Button>
+          )}
 
           {editable && (
             <>
@@ -719,6 +810,93 @@ export default function AdminDevices() {
             </Button>
             <Button onClick={create} loading={busy}>
               註冊裝置
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* ------------------------- Ingest key ------------------------------ */}
+      <Dialog
+        open={Boolean(keyFor)}
+        onOpenChange={(open) => {
+          if (open) return;
+          // Discard the key with the dialog. It exists nowhere else.
+          setKeyFor(null);
+          setIssuedKey(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>資料回報金鑰</DialogTitle>
+            <DialogDescription>
+              {keyFor?.deviceId} · {keyFor ? (DEVICE_LABELS_ZH[keyFor.type] ?? keyFor.name) : ''}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              有金鑰的裝置可以自行回報量測值。平台只會儲存金鑰的雜湊值，
+              因此金鑰僅在產生的當下顯示一次，之後無法再查看；遺失時只能重新產生，
+              舊金鑰同時失效。
+            </p>
+
+            {issuedKey ? (
+              <div className="space-y-2 rounded-lg border border-risk-medium-border bg-risk-medium-bg/40 p-3">
+                <p className="text-xs font-semibold text-risk-medium">
+                  請立即複製，關閉後將無法再次顯示
+                </p>
+                <code className="block break-all rounded bg-card p-2 font-mono text-xs">
+                  {issuedKey}
+                </code>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(issuedKey);
+                    toast.success('已複製金鑰');
+                  }}
+                >
+                  複製
+                </Button>
+              </div>
+            ) : keyFor?.ingestKeyPrefix ? (
+              <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs">
+                <p>
+                  目前金鑰：
+                  <span className="ml-1 font-mono">{keyFor.ingestKeyPrefix}…</span>
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  {keyFor.lastIngestAt
+                    ? `此裝置已開始回報實機資料，最後一次為 ${timeAgo(keyFor.lastIngestAt)}。`
+                    : '此裝置尚未回報任何資料，畫面上的數值仍由模擬引擎提供。'}
+                </p>
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                此裝置尚未設定金鑰，其數值由模擬引擎提供。
+              </p>
+            )}
+
+            {keyFor?.lastIngestAt && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                撤銷金鑰後，模擬引擎<strong className="font-semibold">不會</strong>接手這個裝置的數值。
+                已回報過實機資料的裝置若停止回報，畫面會顯示最後一次讀值並標示為離線，
+                而不是改用推估值填補。
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            {keyFor?.ingestKeyPrefix && (
+              <Button
+                variant="outline"
+                onClick={() => keyFor && void revokeKey(keyFor)}
+                loading={busy}
+              >
+                撤銷金鑰
+              </Button>
+            )}
+            <Button onClick={() => keyFor && void issueKey(keyFor)} loading={busy}>
+              {keyFor?.ingestKeyPrefix ? '重新產生' : '產生金鑰'}
             </Button>
           </DialogFooter>
         </DialogContent>

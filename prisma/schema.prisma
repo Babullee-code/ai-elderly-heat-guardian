@@ -120,6 +120,20 @@ model Device {
   isActuator Boolean
   createdAt  DateTime @default(now())
 
+  // --- Ingest credentials --------------------------------------------------
+  // The key itself is never stored. A device proves identity by presenting it;
+  // the server compares hashes. Losing this table therefore cannot leak a
+  // working credential, and a key can only be shown once, at issue.
+  ingestKeyHash   String?
+  // First characters of the key, so an operator can tell two keys apart in the
+  // console without the console ever holding a usable one.
+  ingestKeyPrefix String?
+  ingestKeyIssuedAt DateTime?
+  // Set the first time this device posts a reading. Once it is set the
+  // simulator stops standing in for the device: a real sensor that has gone
+  // quiet must read as offline, not be quietly replaced by invented data.
+  lastIngestAt    DateTime?
+
   user           ElderlyUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
   sensorReadings SensorReading[]
 

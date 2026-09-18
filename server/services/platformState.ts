@@ -67,6 +67,13 @@ import {
 import { calculateHeatIndex, clamp, round1 } from '../../shared/domain/heatIndex.js';
 import { buildProvenance } from '../../shared/domain/provenance.js';
 import {
+  type AcceptedMeasurement,
+  type IngestedReadings,
+  deviceIsReal,
+  ingestSource,
+} from '../../shared/domain/ingest.js';
+import type { ExternalSources } from '../../shared/domain/inputSources.js';
+import {
   mayContributeToCityStats,
   mayStorePhysiology,
   shouldEscalate,
@@ -135,6 +142,15 @@ class PlatformState {
   private notifications: Notification[] = [];
   private activeCoolingSpaceCount = 0;
   private notificationsToday = 0;
+
+  /**
+   * The most recent measurements posted by real devices, keyed by device id.
+   *
+   * Held in memory alongside the other live state, for the same reason: this
+   * is the working set the tick loop reads, not the historical record. What is
+   * persisted is the reading history, on the normal cadence.
+   */
+  private ingested = new Map<string, IngestedReadings>();
 
   private simulation: SimulationState = {
     running: true,
@@ -500,6 +516,7 @@ class PlatformState {
             household: runtime.household,
             smartHome: runtime.smartHome,
             devices: userDevices,
+            external: this.externalSourcesFor(userDevices),
             simulation: this.simulation,
             isFocus,
           })
@@ -612,6 +629,68 @@ class PlatformState {
   }
 
   /**
+   * Accept measurements posted by a real device.
+   *
+   * Validation has already happened at the route; by the time a measurement
+   * arrives here it is one this platform is willing to score. The device's
+   * contact time is updated because this IS contact - the heartbeat the
+   * simulator fakes for its own devices is, for a real one, this call.
+   */
+  async acceptIngest(device: Device, measurements: AcceptedMeasurement[]): Promise<void> {
+    const now = new Date();
+
+    const existing = this.ingested.get(device.id);
+    const byField = new Map<string, AcceptedMeasurement>(
+      (existing?.measurements ?? []).map((m) => [m.field, m]),
+    );
+    for (const measurement of measurements) byField.set(measurement.field, measurement);
+
+    this.ingested.set(device.id, {
+      deviceId: device.deviceId,
+      measurements: [...byField.values()],
+      receivedAt: now.toISOString(),
+    });
+
+    // Reflect the contact in live state immediately, so the next tick - and
+    // every connected screen - sees the device as reporting.
+    const live = this.devices.find((d) => d.id === device.id);
+    if (live) {
+      live.lastSeen = now.toISOString();
+      live.lastIngestAt = now.toISOString();
+      if (live.status === 'OFFLINE') live.status = 'ONLINE';
+    }
+
+    await deviceRepo.markIngested(device.id, now);
+  }
+
+  /** What one resident's real devices are currently supplying. */
+  private externalSourcesFor(devices: Device[]): ExternalSources | undefined {
+    const byDeviceId = new Map<string, ReturnType<typeof ingestSource>>();
+    const realDeviceIds = new Set<string>();
+
+    for (const device of devices) {
+      if (!device.ingestKeyPrefix && !deviceIsReal(device)) continue;
+      byDeviceId.set(device.id, ingestSource(device, this.ingested.get(device.id)));
+      if (deviceIsReal(device)) realDeviceIds.add(device.id);
+    }
+
+    return byDeviceId.size > 0 ? { byDeviceId, realDeviceIds } : undefined;
+  }
+
+  /** Devices that have ever posted, for the ingest status endpoint. */
+  getIngestStatus(): {
+    deviceId: string;
+    measurements: number;
+    receivedAt: string;
+  }[] {
+    return [...this.ingested.values()].map((entry) => ({
+      deviceId: entry.deviceId,
+      measurements: entry.measurements.length,
+      receivedAt: entry.receivedAt,
+    }));
+  }
+
+  /**
    * Record that every online sensor has just reported.
    *
    * `lastSeen` is the platform's answer to "when did we last hear from this
@@ -634,7 +713,13 @@ class PlatformState {
     );
 
     const reporting = this.devices.filter(
-      (d) => !d.isActuator && d.status === 'ONLINE' && monitored.has(d.userId),
+      (d) =>
+        !d.isActuator &&
+        d.status === 'ONLINE' &&
+        monitored.has(d.userId) &&
+        // A real device's contact time is set when it actually posts. Ticking
+        // it here would report a silent sensor as having just been heard from.
+        !deviceIsReal(d),
     );
 
     for (const device of reporting) device.lastSeen = now;

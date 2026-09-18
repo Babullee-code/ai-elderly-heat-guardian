@@ -695,6 +695,81 @@ route('PATCH', '/devices/:id', (ctx, { id }) => {
   return { device };
 });
 
+// --- ingest credentials -----------------------------------------------------
+
+/**
+ * Key management in the static build.
+ *
+ * The console behaves the same as against the real server - a key is issued,
+ * shown once and never retrievable - but there is a difference worth being
+ * straight about: this build has no HTTP server, so nothing can actually POST
+ * to an ingest endpoint here. A key issued in the static demo proves the
+ * workflow, not the data path. The full stack is where a real device connects.
+ */
+route('POST', '/devices/:id/ingest-key', (ctx, { id }) => {
+  require_(ctx, 'device:write');
+  const device = db.devices.find((d) => d.id === id);
+  if (!device) throw notFound('找不到此裝置。');
+
+  if (device.isActuator) {
+    throw new HttpError(
+      400,
+      'NOT_A_SENSOR',
+      'An actuator has nothing to report.',
+      '此裝置為控制器，沒有可回報的量測值，不需要資料金鑰。',
+    );
+  }
+
+  // Not a credential: this build cannot authenticate anything, and generating
+  // something that looked like a working key would be the fiction the rest of
+  // this system is built to avoid.
+  const key = `hgk_demo_${Math.random().toString(36).slice(2, 10)}`;
+  device.ingestKeyPrefix = key.slice(0, 12);
+  device.ingestKeyIssuedAt = new Date().toISOString();
+
+  db.audit({
+    actorId: account(ctx).id,
+    actorName: account(ctx).nameZh,
+    actorRole: account(ctx).role,
+    action: `Issued an ingest key for ${device.deviceId}`,
+    actionZh: `為 ${device.deviceId} 產生資料回報金鑰`,
+    entity: 'Device',
+    entityId: device.id,
+    // The key itself is never recorded - that would defeat hashing it.
+    oldValue: null,
+    newValue: null,
+  });
+
+  return {
+    device,
+    key,
+    messageZh: '請立即複製此金鑰，離開後將無法再次顯示。（靜態展示版無法實際接收回報）',
+  };
+});
+
+route('DELETE', '/devices/:id/ingest-key', (ctx, { id }) => {
+  require_(ctx, 'device:write');
+  const device = db.devices.find((d) => d.id === id);
+  if (!device) throw notFound('找不到此裝置。');
+
+  device.ingestKeyPrefix = null;
+  device.ingestKeyIssuedAt = null;
+
+  db.audit({
+    actorId: account(ctx).id,
+    actorName: account(ctx).nameZh,
+    actorRole: account(ctx).role,
+    action: `Revoked the ingest key for ${device.deviceId}`,
+    actionZh: `撤銷 ${device.deviceId} 的資料回報金鑰`,
+    entity: 'Device',
+    entityId: device.id,
+    oldValue: null,
+    newValue: null,
+  });
+
+  return { device };
+});
+
 // --- smart home -------------------------------------------------------------
 
 route('POST', '/devices/smart-home/:userId', (ctx, { userId }) => {
