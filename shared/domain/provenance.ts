@@ -143,6 +143,46 @@ export function qualityFromAge(ageSec: number): DataQuality {
   return 'STALE';
 }
 
+/**
+ * Turn one field's situation into its provenance record.
+ *
+ * Both the live assembler and `buildProvenance` route through here, so there
+ * is exactly one answer in the codebase to "is this value current, and what
+ * produced it". Phase 1 removed three competing answers from the UI; adding a
+ * second one on the server would put the problem straight back.
+ */
+export function fieldProvenance(args: {
+  field: MeasurementField;
+  origin: DataOrigin;
+  observedAt: string;
+  now: Date;
+  simulated: boolean;
+  /** Set when the value is held because its source could not report. */
+  held?: boolean;
+  deviceId?: string;
+  deviceName?: string;
+  noteZh?: string;
+  note?: string;
+}): FieldProvenance {
+  const ageSec = Math.max(
+    0,
+    Math.round((args.now.getTime() - new Date(args.observedAt).getTime()) / 1000),
+  );
+
+  return {
+    field: args.field,
+    origin: args.origin,
+    quality: args.held ? 'OFFLINE' : qualityFromAge(ageSec),
+    observedAt: args.observedAt,
+    ageSec,
+    deviceId: args.deviceId,
+    deviceName: args.deviceName,
+    simulated: args.simulated,
+    noteZh: args.noteZh,
+    note: args.note,
+  };
+}
+
 export interface BuildProvenanceArgs {
   reading: ReadingSnapshot;
   /** The resident's devices, whose status decides whether a field is live. */

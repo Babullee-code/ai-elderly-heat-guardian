@@ -13,11 +13,25 @@
  * running the air conditioner actually pulls indoor temperature toward the
  * target, humidity tracks temperature, and heart rate follows the heat index
  * with lag. Judges asking "does the AC actually do anything?" get a yes.
+ *
+ * PHYSICS AND MEASUREMENT ARE SEPARATE
+ * -----------------------------------
+ * `advanceHousehold` computes what is physically true in the home. It knows
+ * nothing about sensors, and it keeps running whether or not anything is
+ * watching - a room goes on heating while its thermometer is offline. Turning
+ * that truth into a reading is the job of the input sources in
+ * `inputSources.ts`, which sample it and can individually fail.
+ *
+ * The point of the split is that the simulator imitates the SENSORS, not the
+ * result. Nothing here can set a risk level, and nothing here decides what a
+ * screen shows when a sensor goes quiet.
  */
 
 import type {
   Device,
+  HouseholdState,
   PersonalBaseline,
+  ReadingProvenance,
   ReadingSnapshot,
   ScenarioName,
   ScenarioPhase,
@@ -25,6 +39,7 @@ import type {
   SmartHomeState,
 } from '../types/domain.js';
 import { clamp, round1 } from './heatIndex.js';
+import { assembleReading, sourcesForResident } from './inputSources.js';
 
 /**
  * How far below outdoor temperature a domestic air conditioner can hold the
@@ -205,6 +220,16 @@ export interface TickArgs {
   baseline: PersonalBaseline;
   /** Previous reading, so the walk is continuous. */
   previous: ReadingSnapshot;
+  /**
+   * The household's previous physical state.
+   *
+   * Optional: when omitted the physics resumes from `previous` instead, which
+   * is what callers holding only a reading can offer. That fallback carries a
+   * real cost - a held value then feeds back into the model, so the simulated
+   * room stops warming while its sensor is dark - so the monitoring loop
+   * supplies the true state and only the unit tests rely on the fallback.
+   */
+  household?: HouseholdState;
   /** Live smart-home state - determines whether cooling is pulling temp down. */
   smartHome: SmartHomeState;
   devices: Device[];
@@ -213,15 +238,60 @@ export interface TickArgs {
   isFocus: boolean;
 }
 
+/** Build the initial physical state for a home, at rest and comfortable. */
+export function initialHousehold(
+  profile: AmbientProfile,
+  baseline: PersonalBaseline,
+): HouseholdState {
+  return {
+    indoorTempC: profile.baseIndoorTempC,
+    indoorHumidityPct: profile.baseIndoorHumidityPct,
+    outdoorTempC: profile.baseOutdoorTempC,
+    outdoorHumidityPct: profile.baseOutdoorHumidityPct,
+    airQualityIndex: profile.baseAirQualityIndex,
+    heartRateBpm: baseline.heartRate.mean,
+    activityStepsPerHour: baseline.activityStepsPerHour.mean,
+    skinTempC: baseline.skinTemp.mean,
+    heatwaveDays: profile.baseHeatwaveDays,
+    at: new Date().toISOString(),
+  };
+}
+
+/** Read a physical state out of a reading, for callers that hold only one. */
+export function householdFromReading(reading: ReadingSnapshot): HouseholdState {
+  return {
+    indoorTempC: reading.indoorTempC,
+    indoorHumidityPct: reading.indoorHumidityPct,
+    outdoorTempC: reading.outdoorTempC,
+    outdoorHumidityPct: reading.outdoorHumidityPct,
+    airQualityIndex: reading.airQualityIndex,
+    heartRateBpm: reading.heartRateBpm,
+    activityStepsPerHour: reading.activityStepsPerHour,
+    skinTempC: reading.skinTempC,
+    heatwaveDays: reading.heatwaveDays,
+    at: reading.timestamp,
+  };
+}
+
 /**
- * Advance one user's readings by a single tick.
+ * Advance the home's physical state by one tick.
  *
  * Physically coupled: the AC pulls indoor temperature toward the target, the
  * dehumidifier pulls humidity down, and heart rate chases the resulting heat
  * load with a lag so recovery is visibly gradual rather than instant.
+ *
+ * Deliberately knows nothing about sensors. Whether anyone is measuring the
+ * room has no bearing on how hot it gets.
  */
-export function tickReadings(args: TickArgs): ReadingSnapshot {
-  const { profile, baseline, previous, smartHome, devices, simulation, isFocus } = args;
+export function advanceHousehold(args: {
+  profile: AmbientProfile;
+  baseline: PersonalBaseline;
+  previous: HouseholdState;
+  smartHome: SmartHomeState;
+  simulation: SimulationState;
+  isFocus: boolean;
+}): HouseholdState {
+  const { profile, baseline, previous, smartHome, simulation, isFocus } = args;
 
   const offsets =
     isFocus && simulation.scenario && simulation.scenario !== 'AMBIENT'
@@ -320,52 +390,68 @@ export function tickReadings(args: TickArgs): ReadingSnapshot {
       ? profile.baseHeatwaveDays + 2
       : profile.baseHeatwaveDays;
 
-  // Offline sensors must not silently supply data. Where the responsible
-  // device is offline or disabled we hold the previous value, which is what a
-  // real ingestion layer would do, and the UI flags the stale sensor.
-  const held = heldValues(devices, previous);
-
   return {
-    indoorTempC: held.indoorTempC ?? indoorTempC,
-    indoorHumidityPct: held.indoorHumidityPct ?? indoorHumidityPct,
+    indoorTempC,
+    indoorHumidityPct,
     outdoorTempC,
     outdoorHumidityPct,
-    airQualityIndex: held.airQualityIndex ?? airQualityIndex,
-    heartRateBpm: held.heartRateBpm ?? heartRateBpm,
-    activityStepsPerHour: held.activityStepsPerHour ?? activityStepsPerHour,
-    skinTempC: held.skinTempC ?? skinTempC,
+    airQualityIndex,
+    heartRateBpm,
+    activityStepsPerHour,
+    skinTempC,
     heatwaveDays,
-    simulated: true,
-    timestamp: new Date().toISOString(),
+    at: new Date().toISOString(),
   };
 }
 
+export interface TickResult {
+  /** The home's new physical state, to be carried into the next tick. */
+  household: HouseholdState;
+  /** What the sensors managed to observe of it. */
+  reading: ReadingSnapshot;
+  /** Where each observed value came from, and how far it can be trusted. */
+  provenance: ReadingProvenance;
+}
+
 /**
- * When the device responsible for a metric is offline or disabled, return the
- * previous value so the reading is visibly stale instead of fabricated.
+ * Advance one resident by a single tick: physics, then measurement.
+ *
+ * This is the function the monitoring loop calls. It never decides a risk
+ * level, and it never writes a value the sources did not produce.
  */
-function heldValues(
-  devices: Device[],
-  previous: ReadingSnapshot,
-): Partial<Record<keyof ReadingSnapshot, number>> {
-  const isDown = (type: Device['type']) => {
-    const matching = devices.filter((d) => d.type === type);
-    if (matching.length === 0) return false;
-    return matching.every((d) => d.status === 'OFFLINE' || d.status === 'DISABLED');
-  };
+export function tickHousehold(
+  args: TickArgs & { userId: string; previousProvenance?: ReadingProvenance },
+): TickResult {
+  const household = advanceHousehold({
+    profile: args.profile,
+    baseline: args.baseline,
+    previous: args.household ?? householdFromReading(args.previous),
+    smartHome: args.smartHome,
+    simulation: args.simulation,
+    isFocus: args.isFocus,
+  });
 
-  const held: Partial<Record<keyof ReadingSnapshot, number>> = {};
+  const sources = sourcesForResident(args.userId, args.devices);
 
-  if (isDown('TEMPERATURE_SENSOR')) held.indoorTempC = previous.indoorTempC;
-  if (isDown('HUMIDITY_SENSOR')) held.indoorHumidityPct = previous.indoorHumidityPct;
-  if (isDown('AIR_QUALITY_SENSOR')) held.airQualityIndex = previous.airQualityIndex;
-  if (isDown('SMART_WATCH')) {
-    held.heartRateBpm = previous.heartRateBpm;
-    held.activityStepsPerHour = previous.activityStepsPerHour;
-    held.skinTempC = previous.skinTempC;
-  }
+  const { reading, provenance } = assembleReading({
+    reports: sources.map((source) => source.poll(household)),
+    previous: args.previous,
+    previousProvenance: args.previousProvenance,
+  });
 
-  return held;
+  return { household, reading, provenance };
+}
+
+/**
+ * Advance one user's readings by a single tick.
+ *
+ * Retained for callers - chiefly the simulation tests - that care only about
+ * what a resident's sensors report. Equivalent to `tickHousehold` without
+ * carrying the physical state forward; see `TickArgs.household` for the cost
+ * of that.
+ */
+export function tickReadings(args: TickArgs): ReadingSnapshot {
+  return tickHousehold({ ...args, userId: args.profile.userId }).reading;
 }
 
 /** Move `current` a fraction `rate` of the way toward `target`. */

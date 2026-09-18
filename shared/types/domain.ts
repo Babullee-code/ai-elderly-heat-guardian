@@ -319,6 +319,81 @@ export type MeasurementField =
   | 'skinTempC'
   | 'heatwaveDays';
 
+/**
+ * The true physical state of one household.
+ *
+ * This is the world, not the record of it. Sensors SAMPLE this state; they do
+ * not constitute it. The distinction matters: a room keeps heating while its
+ * temperature sensor is offline, and when the sensor comes back it must report
+ * how hot the room actually is now - not resume from the value it froze at.
+ *
+ * Held values therefore live on `ReadingSnapshot`, never here.
+ */
+export interface HouseholdState {
+  indoorTempC: number;
+  indoorHumidityPct: number;
+  outdoorTempC: number;
+  outdoorHumidityPct: number;
+  airQualityIndex: number;
+  heartRateBpm: number;
+  activityStepsPerHour: number;
+  skinTempC: number;
+  heatwaveDays: number;
+  /** When this physical state was computed. */
+  at: string;
+}
+
+/** What kind of thing produced a measurement. */
+export type InputSourceKind =
+  | 'HOUSEHOLD_SENSOR'
+  | 'WEARABLE'
+  | 'WEATHER'
+  | 'ENVIRONMENT_MODEL'
+  | 'INGEST';
+
+/** One value, from one source, at one moment. */
+export interface Measurement {
+  field: MeasurementField;
+  value: number;
+  observedAt: string;
+}
+
+/**
+ * What one input source has to say this tick.
+ *
+ * A source that cannot report says so explicitly rather than returning
+ * nothing, because "the watch is offline" and "there is no watch" call for
+ * different words on screen.
+ */
+export interface SourceReport {
+  sourceId: string;
+  kind: InputSourceKind;
+  origin: DataOrigin;
+  /** Fields this source is responsible for, whether or not it reported them. */
+  fields: MeasurementField[];
+  measurements: Measurement[];
+  available: boolean;
+  simulated: boolean;
+  deviceId?: string;
+  deviceName?: string;
+  /** Why the source could not report, when it could not. */
+  unavailableReasonZh?: string;
+  unavailableReason?: string;
+  /**
+   * Lower wins. A real device outranks a modelled estimate, so a household
+   * that later gains a sensor stops using the estimate automatically.
+   */
+  priority: number;
+  /**
+   * True for a source that only fills gaps nothing else covers.
+   *
+   * A fallback must never stand in for a sensor that has failed: replacing a
+   * dead thermometer with a modelled guess would hide the failure behind a
+   * plausible number, which is the one thing a safety system must not do.
+   */
+  fallback?: boolean;
+}
+
 export interface FieldProvenance {
   field: MeasurementField;
   origin: DataOrigin;

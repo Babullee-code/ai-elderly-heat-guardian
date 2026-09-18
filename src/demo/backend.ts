@@ -45,11 +45,13 @@ import type {
   Device,
   ElderlyUser,
   EnvironmentReading,
+  HouseholdState,
   LiveSnapshot,
   Notification,
   NotificationTemplate,
   PersonalBaseline,
   PlatformStats,
+  ReadingProvenance,
   ReadingSnapshot,
   RiskAssessment,
   RiskEvent,
@@ -78,10 +80,11 @@ import {
 } from '@shared/domain/notificationEngine';
 import {
   type AmbientProfile,
+  initialHousehold,
   initialReading,
   resolvePhase,
   scenarioDurationSec,
-  tickReadings,
+  tickHousehold,
 } from '@shared/domain/simulationEngine';
 import { calculateHeatIndex, clamp, round1 } from '@shared/domain/heatIndex';
 import { buildProvenance } from '@shared/domain/provenance';
@@ -118,6 +121,8 @@ interface UserRuntime {
   user: ElderlyUser;
   baseline: PersonalBaseline;
   profile: AmbientProfile;
+  /** The home's physical state, which evolves whether or not it is measured. */
+  household: HouseholdState;
   reading: ReadingSnapshot;
   assessment: RiskAssessment;
   smartHome: SmartHomeState;
@@ -300,6 +305,7 @@ export class DemoBackend {
         user,
         baseline,
         profile,
+        household: initialHousehold(profile, baseline),
         reading,
         assessment,
         smartHome,
@@ -551,16 +557,22 @@ export class DemoBackend {
     reading: ReadingSnapshot;
     history: RiskHistoryPoint[];
     previousLevel: RiskLevel | null;
+    /** From the assembler, when this reading came from one. */
+    provenance?: ReadingProvenance;
   }): RiskAssessment {
     const { user, baseline, reading, history, previousLevel } = args;
 
     const userDevices = this.devices.filter((d) => d.userId === user.id);
 
-    const provenance = buildProvenance({
-      reading,
-      devices: userDevices,
-      simulated: reading.simulated,
-    });
+    // Prefer the assembler's answer; fall back to device status for readings
+    // that did not come from a tick (boot, and a paused simulation).
+    const provenance =
+      args.provenance ??
+      buildProvenance({
+        reading,
+        devices: userDevices,
+        simulated: reading.simulated,
+      });
 
     const core = assessRisk({
       userId: user.id,
@@ -642,18 +654,27 @@ export class DemoBackend {
 
       const isFocus = runtime.user.id === this.simulation.focusUserId;
 
-      const reading = this.simulation.running
-        ? tickReadings({
+      // Physics, then measurement - the same two steps as the server.
+      const ticked = this.simulation.running
+        ? tickHousehold({
+            userId: runtime.user.id,
             profile: runtime.profile,
             baseline: runtime.baseline,
             previous: runtime.reading,
+            previousProvenance: runtime.assessment.provenance,
+            household: runtime.household,
             smartHome: runtime.smartHome,
             devices: this.devices.filter((d) => d.userId === runtime.user.id),
             simulation: this.simulation,
             isFocus,
           })
+        : null;
+
+      const reading = ticked
+        ? ticked.reading
         : { ...runtime.reading, timestamp: new Date().toISOString() };
 
+      if (ticked) runtime.household = ticked.household;
       runtime.reading = reading;
 
       const previousLevel = runtime.assessment.level;
@@ -665,6 +686,7 @@ export class DemoBackend {
         reading,
         history: runtime.history,
         previousLevel,
+        provenance: ticked?.provenance,
       });
 
       runtime.assessment = assessment;
@@ -1259,6 +1281,9 @@ export class DemoBackend {
     this.simulation.manualOffsets = { tempC: 0, humidityPct: 0, heartRateBpm: 0 };
 
     for (const runtime of this.runtimes.values()) {
+      // Reset the world as well as the record of it, or the next scenario
+      // would resume the physics from wherever the last one left the room.
+      runtime.household = initialHousehold(runtime.profile, runtime.baseline);
       runtime.reading = initialReading(runtime.profile, runtime.baseline);
       runtime.userOverride = false;
       runtime.lastNotifiedAt = 0;

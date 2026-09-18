@@ -74,10 +74,11 @@ Imported verbatim by both the server and the browser. Pure functions, no I/O.
 | `baselineEngine.ts` | Learn a personal baseline; score deviation from it |
 | `riskEngine.ts` | Five factors, composite score, level resolution, explanation |
 | `actionEngine.ts` | Action catalogue, rule evaluation, cooling authorisation |
-| `simulationEngine.ts` | Scenario phases and physically coupled reading generation |
+| `simulationEngine.ts` | Scenario phases and the household physics sources sample |
 | `coolingSpaces.ts` | Distance, opening hours, recommendation ranking |
 | `notificationEngine.ts` | Template interpolation |
 | `provenance.ts` | Per-field origin and freshness: the only place staleness is decided |
+| `inputSources.ts` | Input sources and the assembler that builds one reading from them |
 | `permissions.ts` | Role → permission table |
 | `config.ts` | **The only hard-coded thresholds in the codebase** |
 
@@ -177,6 +178,58 @@ feature.
 - **No secrets in the database.** Data-source configuration holds endpoints and
   intervals; credentials come from environment variables.
 - Errors never return stack traces to the client.
+
+## Input sources
+
+The monitoring loop does not generate readings. It advances a household's
+**physical state**, then asks **input sources** what they can observe of it.
+
+```
+advanceHousehold()        the world: room, weather, body - coupled, no sensors
+        |
+        v
+  source.poll()           each source samples the fields it is responsible for
+        |
+        v
+ assembleReading()        one reading + its provenance, from one set of facts
+```
+
+Sources are ranked; lower wins:
+
+| Priority | Source | Status |
+|---|---|---|
+| 10 | `INGEST` — a real device posting to the API | Phase 3 |
+| 20 | `WEATHER_PROVIDER` — a connected weather service | Phase 4 |
+| 50 | `SIMULATED_DEVICE` — the simulator standing in for hardware | in use |
+| 55 | `SIMULATED_WEATHER` | in use |
+| 90 | `ENVIRONMENT_MODEL` — inference for fields nothing measures | in use |
+
+Three rules the assembler enforces:
+
+1. **A source that cannot report, reports nothing.** A sensor that has lost
+   power does not transmit an old value, so `simulatedDeviceSource` returns an
+   empty measurement list rather than a stale number. What to show instead is
+   the assembler's decision, not the sensor's.
+2. **A fallback never covers for a failure.** If a household has a thermometer
+   and it is dead, the value is HELD — the environment model is *blocked* for
+   that field. Substituting a modelled guess would hide the failure behind a
+   plausible number. The model only supplies fields no device covers at all.
+3. **Value and provenance are produced together**, from the same reports, so
+   they cannot disagree.
+
+### Physics is separate from measurement
+
+`HouseholdState` is what is physically true in a home; `ReadingSnapshot` is
+what its sensors managed to observe. Held values live on the reading and never
+enter the state, so a room keeps heating while its thermometer is offline — and
+when that sensor reconnects it reports how hot the room *is*, not the value it
+froze at. That is both more honest and the precondition for the SENSOR_OFFLINE
+scenario in Phase 5.
+
+The practical payoff is that a source is an interface, not a simulation detail.
+An HTTP ingest endpoint and a weather provider are additional sources at higher
+priority; the monitoring engine, the risk engine and every screen accept them
+without changes.
 
 ## Data provenance
 

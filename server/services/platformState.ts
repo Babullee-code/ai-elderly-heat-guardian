@@ -28,11 +28,13 @@ import type {
   CityRisk,
   Device,
   ElderlyUser,
+  HouseholdState,
   LiveSnapshot,
   Notification,
   NotificationTemplate,
   PersonalBaseline,
   PlatformStats,
+  ReadingProvenance,
   ReadingSnapshot,
   RiskAssessment,
   RiskHistoryPoint,
@@ -56,10 +58,11 @@ import {
 } from '../../shared/domain/notificationEngine.js';
 import {
   type AmbientProfile,
+  initialHousehold,
   initialReading,
   scenarioDurationSec,
   resolvePhase,
-  tickReadings,
+  tickHousehold,
 } from '../../shared/domain/simulationEngine.js';
 import { calculateHeatIndex, clamp, round1 } from '../../shared/domain/heatIndex.js';
 import { buildProvenance } from '../../shared/domain/provenance.js';
@@ -93,6 +96,15 @@ interface UserRuntime {
   user: ElderlyUser;
   baseline: PersonalBaseline;
   profile: AmbientProfile;
+  /**
+   * What is physically true in the home.
+   *
+   * Kept separate from `reading` on purpose: the room goes on heating while
+   * its thermometer is offline, and when that sensor comes back it must report
+   * how hot the room is NOW rather than resuming from the value it froze at.
+   * Held values belong to the reading; they never enter this.
+   */
+  household: HouseholdState;
   reading: ReadingSnapshot;
   assessment: RiskAssessment;
   smartHome: SmartHomeState;
@@ -199,6 +211,7 @@ class PlatformState {
         user,
         baseline,
         profile,
+        household: initialHousehold(profile, baseline),
         reading,
         assessment,
         smartHome,
@@ -341,23 +354,27 @@ class PlatformState {
     history: RiskHistoryPoint[];
     previousLevel: RiskLevel | null;
     smartHome: SmartHomeState;
+    /** From the assembler, when this reading came from one. */
+    provenance?: ReadingProvenance;
   }): RiskAssessment {
     const { user, baseline, reading, history, previousLevel } = args;
 
     const userDevices = this.devices.filter((d) => d.userId === user.id);
 
     /**
-     * Provenance is built from live device status, so a sensor the CMS just
-     * disabled is reported as OFFLINE on this very tick rather than at the
-     * next reload.
+     * Prefer the assembler's provenance: it was produced from the same source
+     * reports that produced the values, so the two cannot disagree.
+     *
+     * The fallback covers readings that did not come from a tick - boot, and
+     * a paused simulation - where device status is the only evidence available.
      */
-    const provenance = buildProvenance({
-      reading,
-      devices: userDevices,
-      // No ingestion path exists yet (Phase 3), so every value is simulated
-      // and the UI says so rather than implying attached hardware.
-      simulated: reading.simulated,
-    });
+    const provenance =
+      args.provenance ??
+      buildProvenance({
+        reading,
+        devices: userDevices,
+        simulated: reading.simulated,
+      });
 
     const core = assessRisk({
       userId: user.id,
@@ -466,18 +483,33 @@ class PlatformState {
 
       const isFocus = runtime.user.id === this.simulation.focusUserId;
 
-      const reading = this.simulation.running
-        ? tickReadings({
+      const userDevices = this.devices.filter((d) => d.userId === runtime.user.id);
+
+      /**
+       * Physics, then measurement. The simulator advances the home and the
+       * input sources sample it; nothing here writes a value a source did not
+       * produce, and nothing here can set a risk level.
+       */
+      const ticked = this.simulation.running
+        ? tickHousehold({
+            userId: runtime.user.id,
             profile: runtime.profile,
             baseline: runtime.baseline,
             previous: runtime.reading,
+            previousProvenance: runtime.assessment.provenance,
+            household: runtime.household,
             smartHome: runtime.smartHome,
-            devices: this.devices.filter((d) => d.userId === runtime.user.id),
+            devices: userDevices,
             simulation: this.simulation,
             isFocus,
           })
+        : null;
+
+      const reading = ticked
+        ? ticked.reading
         : { ...runtime.reading, timestamp: new Date().toISOString() };
 
+      if (ticked) runtime.household = ticked.household;
       runtime.reading = reading;
 
       const previousLevel = runtime.assessment.level;
@@ -490,6 +522,9 @@ class PlatformState {
         history: runtime.history,
         previousLevel,
         smartHome: runtime.smartHome,
+        // Built by the assembler from the same reports that produced the
+        // values, so the numbers and the statement about them cannot disagree.
+        provenance: ticked?.provenance,
       });
 
       runtime.assessment = assessment;
@@ -1270,6 +1305,7 @@ class PlatformState {
         user,
         baseline,
         profile,
+        household: initialHousehold(profile, baseline),
         reading,
         assessment,
         smartHome,
@@ -1501,6 +1537,9 @@ class PlatformState {
     this.simulation.manualOffsets = { tempC: 0, humidityPct: 0, heartRateBpm: 0 };
 
     for (const runtime of this.runtimes.values()) {
+      // Reset the world as well as the record of it, or the next scenario
+      // would resume the physics from wherever the last one left the room.
+      runtime.household = initialHousehold(runtime.profile, runtime.baseline);
       runtime.reading = initialReading(runtime.profile, runtime.baseline);
       runtime.userOverride = false;
       runtime.lastNotifiedAt = 0;
