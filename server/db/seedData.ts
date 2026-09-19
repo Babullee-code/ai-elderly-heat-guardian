@@ -470,6 +470,11 @@ export function baselineFor(spec: UserSpec): PersonalBaseline {
     },
     // A seeded baseline represents ~14 days of learning at 12 samples/day.
     sampleCount: 168,
+    // Recorded rather than left absent: these residents are established, and
+    // omitting coverage would report all fifty as still warming up. A warm-up
+    // indicator that is permanently lit is one nobody reads - the same reason
+    // weather freshness got its own bands in Phase 4.
+    nightsCovered: 14,
     confidence: 0.93,
     learnedAt: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
   };

@@ -199,3 +199,41 @@ the demo demonstrates something rather than animating it:
 - An offline sensor **holds its last value**; it never invents a reading.
 
 Every generated value carries `simulated: true`.
+
+## Baseline warm-up
+
+The platform's central clinical claim is that 98 BPM means different things for
+different people. That claim is only true once it has learned what it means for
+**this** person, so a baseline is a learned input with a visible maturity:
+
+| State | Meaning | What the screen says |
+|---|---|---|
+| `LEARNING` | fewer than 12 resting samples | "同齡常見範圍" — typical values for the age group, **not** this person's |
+| `PROVISIONAL` | their own data, but under 3 nights | their own range, with how much more would settle it |
+| `READY` | 12+ samples across 3+ nights | "個人平常基準" |
+
+**Two requirements, not one.** Twelve samples from a single evening are twelve
+samples from a single evening — a resting heart rate varies night to night, and
+a band drawn from one will be too narrow, producing false deviations later on
+the screen a caregiver is meant to trust. A night is attributed to the evening
+it began (boundary 06:00 local), because a night that spans midnight would
+otherwise be counted twice.
+
+**The wording follows what was learned.** A newly enrolled resident used to be
+told "高於個人平常基準 24%" while the range came from cohort defaults — a
+personal claim the platform had not earned, on the one screen whose entire
+premise is that personal differs from typical. `BaselineEvaluation.personal`
+now carries that distinction and every surface respects it.
+
+**Learning uses resting samples only.** The relearn path previously fell back
+to *all* readings when resting samples were thin, doing the very thing its own
+comment warned against — and would now also promote the baseline to READY on
+daytime data. It does not need that compromise: too few resting samples is a
+state the platform can simply be in and say so.
+
+Confidence still damps the physiological factor exactly as before
+(`score × (0.55 + 0.45 × confidence)`). **The warm-up work changed no scores** —
+it is descriptive. A LEARNING baseline therefore still contributes about 82% of
+full physiological weight, which is arguably too confident for a borrowed
+range; tightening it would be a versioned model change, not a side effect of
+this one.

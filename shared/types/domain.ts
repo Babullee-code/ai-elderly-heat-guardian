@@ -485,6 +485,22 @@ export type SensorMetric =
 // ---------------------------------------------------------------------------
 
 /** A user's learned personal physiological baseline. */
+/**
+ * How far along a personal baseline is.
+ *
+ *   LEARNING     too few samples; the platform is using typical ranges for
+ *                this age group, NOT this person's own
+ *   PROVISIONAL  learned from their own data, but over too short a span to be
+ *                confident it captured their normal
+ *   READY        enough samples across enough nights
+ *
+ * The distinction is not cosmetic. The whole clinical premise is that 98 BPM
+ * means different things for different people; until the platform has learned
+ * what it means for THIS person, saying "above your personal baseline" is a
+ * claim it has not earned.
+ */
+export type BaselineState = 'LEARNING' | 'PROVISIONAL' | 'READY';
+
 export interface PersonalBaseline {
   userId: string;
   heartRate: { min: number; max: number; mean: number };
@@ -492,6 +508,17 @@ export interface PersonalBaseline {
   activityStepsPerHour: { min: number; max: number; mean: number };
   /** Number of samples the baseline was learned from. */
   sampleCount: number;
+  /**
+   * Distinct days the samples span.
+   *
+   * Twelve samples from one evening are twelve samples from one evening. A
+   * resting heart rate varies night to night, and a band drawn from a single
+   * one will be too narrow - which produces false deviations later, on the
+   * screen a caregiver is meant to trust.
+   *
+   * Optional for baselines persisted before this was recorded.
+   */
+  nightsCovered?: number;
   /** Confidence in the baseline, 0..1 - grows with sampleCount. */
   confidence: number;
   learnedAt: string;
@@ -514,6 +541,16 @@ export interface BaselineEvaluation {
   descriptionZh: string;
   description: string;
   confidence: number;
+  /**
+   * Whether this comparison is against the person's own learned range.
+   *
+   * False while the baseline is still LEARNING, when the range comes from
+   * typical values for the age group. The evaluation is still useful - it is
+   * what any system would do on day one - but it must not be described as
+   * personal, because it is not.
+   */
+  personal: boolean;
+  state: BaselineState;
 }
 
 // ---------------------------------------------------------------------------
@@ -970,7 +1007,18 @@ export type Permission =
 
 export type ScenarioPhase = 'NORMAL' | 'HEAT_INCREASING' | 'MEDIUM_RISK' | 'HIGH_RISK' | 'RECOVERY';
 
-export type ScenarioName = 'FULL_DEMO' | 'HEATWAVE' | 'NIGHT_RECOVERY' | 'DEVICE_FAILURE' | 'AMBIENT';
+export type ScenarioName =
+  | 'FULL_DEMO'
+  | 'HEATWAVE'
+  | 'NIGHT_RECOVERY'
+  | 'DEVICE_FAILURE'
+  /** A sensor stops reporting while the heat rises. */
+  | 'SENSOR_OFFLINE'
+  /** The wearable drops out, taking the physiological signal with it. */
+  | 'WEARABLE_OFFLINE'
+  /** Somebody is enrolled with no history, and the baseline is learned. */
+  | 'NEW_RESIDENT'
+  | 'AMBIENT';
 
 export interface SimulationState {
   running: boolean;

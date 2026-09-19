@@ -12,7 +12,7 @@ import {
   elderlyUserUpdateSchema,
   userPermissionsUpdateSchema,
 } from '../../shared/schemas/index.js';
-import { learnPersonalBaseline } from '../../shared/domain/baselineEngine.js';
+import { baselineReadiness, learnPersonalBaseline } from '../../shared/domain/baselineEngine.js';
 import { RISK_ORDER } from '../../shared/types/domain.js';
 import type { ElderlyUser } from '../../shared/types/domain.js';
 import {
@@ -336,18 +336,27 @@ usersRouter.post(
     const readings = await readingRepo.wearableHistory(user.id, 400);
     const previous = await userRepo.getBaseline(user.id);
 
-    // Learn from resting samples only; a daytime average is contaminated by
-    // activity and would widen the band until real deviations stop registering.
+    /**
+     * Learn from resting samples only.
+     *
+     * A daytime average is contaminated by activity and would widen the band
+     * until real deviations stop registering. This used to fall back to ALL
+     * readings when resting samples were thin - doing the very thing the rule
+     * exists to prevent, and now also reporting a high sample count that would
+     * promote the baseline to "ready" on daytime data.
+     *
+     * There is no need for that compromise. Too few resting samples is not a
+     * problem to be papered over, it is a state the platform can be in and
+     * say so: the baseline comes back LEARNING, the screens explain that it is
+     * comparing against typical ranges meanwhile, and it settles as the nights
+     * accumulate.
+     */
     const resting = readings.filter((r) => {
       const hour = new Date(r.recordedAt).getHours();
       return hour >= 22 || hour <= 6;
     });
 
-    const baseline = learnPersonalBaseline(
-      user.id,
-      resting.length >= 12 ? resting : readings,
-      previous ?? undefined,
-    );
+    const baseline = learnPersonalBaseline(user.id, resting, previous ?? undefined);
 
     await userRepo.setBaseline(user.id, baseline);
 
@@ -361,7 +370,13 @@ usersRouter.post(
     });
 
     await platformState.reloadUsers();
-    res.json({ baseline, sampleCount: baseline.sampleCount });
+
+    res.json({
+      baseline,
+      sampleCount: baseline.sampleCount,
+      // What the operator actually needs to know: whether this is usable yet.
+      readiness: baselineReadiness(baseline),
+    });
   }),
 );
 

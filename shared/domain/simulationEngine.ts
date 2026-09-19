@@ -29,6 +29,7 @@
 
 import type {
   Device,
+  DeviceType,
   HouseholdState,
   PersonalBaseline,
   ReadingProvenance,
@@ -78,6 +79,17 @@ interface PhaseSpec {
   heartRateDrive: number;
   /** Multiplier on activity level - lethargy during high risk. */
   activityFactor: number;
+  /**
+   * Device types the focus resident's hardware should be failing during this
+   * phase.
+   *
+   * The scenario takes a SENSOR away and lets the consequences follow: the
+   * source stops reporting, the assembler holds the last value, provenance
+   * says so, and the risk engine works with what is left. Nothing about the
+   * outcome is scripted - which is the only way a rehearsal of a sensor
+   * failure tells you anything about a real one.
+   */
+  offlineDevices?: DeviceType[];
 }
 
 /**
@@ -118,6 +130,92 @@ const DEVICE_FAILURE_PHASES: PhaseSpec[] = [
   { phase: 'MEDIUM_RISK', durationSec: 45, outdoorTempDelta: 6.5, humidityDelta: 18, heartRateDrive: 16, activityFactor: 0.4 },
 ];
 
+/**
+ * A household sensor fails while the room is heating.
+ *
+ * The point is not that a value stops updating - it is what the platform does
+ * next. Indoor temperature is held at its last reading and marked offline, the
+ * heat index is therefore computed from a number that is no longer true, and
+ * the resident's screen says so instead of showing a comfortable room. Rehearse
+ * this before it happens at three in the afternoon in August.
+ */
+const SENSOR_OFFLINE_PHASES: PhaseSpec[] = [
+  { phase: 'NORMAL', durationSec: 14, outdoorTempDelta: 0, humidityDelta: 0, heartRateDrive: 0, activityFactor: 1 },
+  { phase: 'HEAT_INCREASING', durationSec: 30, outdoorTempDelta: 3.5, humidityDelta: 6, heartRateDrive: 7, activityFactor: 0.8 },
+  // The thermometer dies just as the room starts to matter.
+  {
+    phase: 'MEDIUM_RISK',
+    durationSec: 40,
+    outdoorTempDelta: 7.5,
+    humidityDelta: 16,
+    heartRateDrive: 15,
+    activityFactor: 0.5,
+    offlineDevices: ['TEMPERATURE_SENSOR'],
+  },
+  {
+    phase: 'HIGH_RISK',
+    durationSec: 50,
+    outdoorTempDelta: 10.5,
+    humidityDelta: 20,
+    heartRateDrive: 24,
+    activityFactor: 0.25,
+    offlineDevices: ['TEMPERATURE_SENSOR'],
+  },
+  // Restored, and the reading jumps to what the room actually is - not to
+  // where it was when the sensor went dark.
+  { phase: 'RECOVERY', durationSec: 60, outdoorTempDelta: 1, humidityDelta: 2, heartRateDrive: 0, activityFactor: 0.9 },
+];
+
+/**
+ * The wearable drops out during a heat episode.
+ *
+ * Worse than losing a room sensor, because the physiological comparison is the
+ * part of the model nothing else substitutes for: heart rate against this
+ * person's own baseline is the signal that distinguishes a hot room from a
+ * person in trouble. The platform must keep working on environmental evidence
+ * alone and be visibly less certain, rather than quietly scoring as though the
+ * missing signal were reassuring.
+ */
+const WEARABLE_OFFLINE_PHASES: PhaseSpec[] = [
+  { phase: 'NORMAL', durationSec: 14, outdoorTempDelta: 0, humidityDelta: 0, heartRateDrive: 0, activityFactor: 1 },
+  { phase: 'HEAT_INCREASING', durationSec: 30, outdoorTempDelta: 3.5, humidityDelta: 6, heartRateDrive: 8, activityFactor: 0.8 },
+  {
+    phase: 'MEDIUM_RISK',
+    durationSec: 40,
+    outdoorTempDelta: 7.5,
+    humidityDelta: 16,
+    heartRateDrive: 18,
+    activityFactor: 0.5,
+    offlineDevices: ['SMART_WATCH'],
+  },
+  {
+    phase: 'HIGH_RISK',
+    durationSec: 50,
+    outdoorTempDelta: 10.5,
+    humidityDelta: 20,
+    heartRateDrive: 28,
+    activityFactor: 0.25,
+    offlineDevices: ['SMART_WATCH'],
+  },
+  { phase: 'RECOVERY', durationSec: 60, outdoorTempDelta: 1, humidityDelta: 2, heartRateDrive: 0, activityFactor: 0.9 },
+];
+
+/**
+ * A newly enrolled resident, with no history to judge them against.
+ *
+ * Deliberately gentle on the environment: the subject here is the baseline,
+ * not the weather. What should be visible is the platform saying plainly that
+ * it does not yet know this person, comparing them against typical values for
+ * their age group meanwhile, and then switching to their own range as the
+ * nights accumulate.
+ */
+const NEW_RESIDENT_PHASES: PhaseSpec[] = [
+  { phase: 'NORMAL', durationSec: 30, outdoorTempDelta: 0, humidityDelta: 0, heartRateDrive: 0, activityFactor: 1 },
+  { phase: 'HEAT_INCREASING', durationSec: 40, outdoorTempDelta: 2.5, humidityDelta: 5, heartRateDrive: 6, activityFactor: 0.85 },
+  { phase: 'MEDIUM_RISK', durationSec: 50, outdoorTempDelta: 6, humidityDelta: 14, heartRateDrive: 13, activityFactor: 0.6 },
+  { phase: 'RECOVERY', durationSec: 60, outdoorTempDelta: 1, humidityDelta: 2, heartRateDrive: 0, activityFactor: 0.9 },
+];
+
 export const SCENARIOS: Record<ScenarioName, { phases: PhaseSpec[]; label: string; labelZh: string; description: string }> = {
   FULL_DEMO: {
     phases: FULL_DEMO_PHASES,
@@ -143,6 +241,24 @@ export const SCENARIOS: Record<ScenarioName, { phases: PhaseSpec[]; label: strin
     labelZh: '降溫設備失效',
     description: 'Risk rises while cooling is offline, so blocked-action reporting is visible.',
   },
+  SENSOR_OFFLINE: {
+    phases: SENSOR_OFFLINE_PHASES,
+    label: 'Sensor goes offline',
+    labelZh: '感測器失聯',
+    description: 'A room sensor stops reporting mid-episode; the value is held and marked, never replaced.',
+  },
+  WEARABLE_OFFLINE: {
+    phases: WEARABLE_OFFLINE_PHASES,
+    label: 'Wearable drops out',
+    labelZh: '穿戴裝置失聯',
+    description: 'The physiological signal is lost during a heat episode; risk continues on environment alone.',
+  },
+  NEW_RESIDENT: {
+    phases: NEW_RESIDENT_PHASES,
+    label: 'Newly enrolled resident',
+    labelZh: '新進住戶',
+    description: 'No history yet: the baseline is learned, and the platform says so until it is.',
+  },
   AMBIENT: {
     phases: [],
     label: 'Ambient drift',
@@ -153,6 +269,22 @@ export const SCENARIOS: Record<ScenarioName, { phases: PhaseSpec[]; label: strin
 
 export function scenarioDurationSec(scenario: ScenarioName): number {
   return SCENARIOS[scenario].phases.reduce((s, p) => s + p.durationSec, 0);
+}
+
+/**
+ * Device types the scenario wants failing right now, for the focus resident.
+ *
+ * Returned rather than applied here: this module knows about physics, not
+ * about the device table. The monitoring loop owns device state and is the
+ * only thing that may change it.
+ */
+export function scenarioOfflineDevices(
+  scenario: ScenarioName | null,
+  elapsedSec: number,
+): DeviceType[] {
+  if (!scenario || scenario === 'AMBIENT') return [];
+  const { spec, finished } = resolvePhase(scenario, elapsedSec);
+  return finished ? [] : (spec.offlineDevices ?? []);
 }
 
 /** Resolve which phase a scenario is in at a given elapsed time. */

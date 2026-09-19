@@ -8,6 +8,11 @@
  */
 
 import { z } from 'zod';
+import { SCENARIOS } from '../domain/simulationEngine.js';
+import type { ScenarioName } from '../types/domain.js';
+
+/** Every scenario the simulation engine actually defines. */
+const SCENARIO_NAMES = Object.keys(SCENARIOS) as [ScenarioName, ...ScenarioName[]];
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -409,9 +414,15 @@ export const userPermissionsUpdateSchema = userPermissionsSchema.partial();
 
 export const simulationCommandSchema = z.object({
   action: z.enum(['start', 'stop', 'reset', 'set-scenario', 'set-speed', 'set-offsets', 'set-focus']),
-  scenario: z
-    .enum(['FULL_DEMO', 'HEATWAVE', 'NIGHT_RECOVERY', 'DEVICE_FAILURE', 'AMBIENT'])
-    .optional(),
+  /**
+   * Derived from the scenario catalogue rather than restated.
+   *
+   * This was a second hardcoded copy of the same list, and it drifted the
+   * moment three scenarios were added: the engine knew them, the UI offered
+   * them, and the API rejected them. An enum with two sources of truth has
+   * one source of truth and one liability.
+   */
+  scenario: z.enum(SCENARIO_NAMES).optional(),
   speed: z.number().min(0.25).max(8).optional(),
   focusUserId: z.string().min(1).optional(),
   offsets: z

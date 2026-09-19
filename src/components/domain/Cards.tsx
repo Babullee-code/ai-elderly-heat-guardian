@@ -23,6 +23,7 @@ import {
   Footprints,
   Gauge,
   Heart,
+  Hourglass,
   Info,
   Library,
   MapPin,
@@ -37,6 +38,8 @@ import {
   Wind,
   XCircle,
 } from 'lucide-react';
+
+import { baselineReadiness } from '@shared/domain/baselineEngine';
 
 import type {
   Alert,
@@ -154,6 +157,68 @@ export function AIExplanationCard({
  * range, so "98 BPM" is legible as normal or abnormal without the viewer
  * needing to know anything about the individual.
  */
+/**
+ * How far along the platform is in learning this resident.
+ *
+ * Rendered above the heart-rate band rather than tucked beside it, because it
+ * changes what the band MEANS: while it is learning, the range on screen
+ * belongs to the age group, not to the person. The card's own subtitle claims
+ * "以本人平常數值判讀" - that claim has to be earned before it is made.
+ */
+export function BaselineWarmUp({
+  baseline,
+  className,
+}: {
+  baseline: PersonalBaseline | null | undefined;
+  className?: string;
+}) {
+  if (!baseline) return null;
+
+  const readiness = baselineReadiness(baseline);
+  if (readiness.state === 'READY') return null;
+
+  const learning = readiness.state === 'LEARNING';
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border p-3',
+        learning
+          ? 'border-risk-medium-border bg-risk-medium-bg/40'
+          : 'border-border bg-muted/40',
+        className,
+      )}
+      role="status"
+    >
+      <div className="flex items-start gap-2">
+        <Hourglass
+          className={cn('mt-0.5 size-4 shrink-0', learning ? 'text-risk-medium' : 'text-muted-foreground')}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1 space-y-2">
+          <p className={cn('text-xs font-semibold', learning ? 'text-risk-medium' : 'text-foreground')}>
+            {learning ? '尚未建立個人基準' : '個人基準建立中'}
+          </p>
+
+          <p className="text-xs leading-relaxed text-muted-foreground">{readiness.summaryZh}</p>
+
+          <div className="space-y-1">
+            <Progress value={readiness.progress * 100} className="h-1.5" />
+            <div className="flex justify-between text-[10px] text-muted-foreground">
+              <span className="tabular">
+                靜息資料 {readiness.sampleCount}/{readiness.requiredSamples} 筆
+              </span>
+              <span className="tabular">
+                涵蓋天數 {readiness.nightsCovered}/{readiness.requiredNights} 天
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function BaselineCard({
   baseline,
   evaluation,
@@ -167,6 +232,9 @@ export function BaselineCard({
 }) {
   const record = baselineRecord ?? baseline ?? null;
   const { range, heartRateBpm, aboveBaseline, deviationPct } = evaluation;
+
+  // While learning, the band belongs to the age group rather than the person.
+  const personal = evaluation.personal;
 
   // Plot across a window that always contains the band plus headroom.
   const windowMin = Math.min(range.min - 12, heartRateBpm - 6);
@@ -183,15 +251,21 @@ export function BaselineCard({
             <Heart className="size-4 text-risk-high" />
           </span>
           <div>
-            <CardTitle className="text-base">個人生理基準</CardTitle>
+            <CardTitle className="text-base">
+              {personal ? '個人生理基準' : '生理基準（建立中）'}
+            </CardTitle>
             <CardDescription className="text-xs">
-              以本人平常數值判讀，而非固定門檻
+              {personal
+                ? '以本人平常數值判讀，而非固定門檻'
+                : '尚未取得本人足夠資料，暫以同齡常見範圍判讀'}
             </CardDescription>
           </div>
         </div>
       </CardHeader>
 
       <CardContent className="space-y-4">
+        <BaselineWarmUp baseline={record} />
+
         <div className="flex items-baseline gap-2">
           <span
             className={cn(

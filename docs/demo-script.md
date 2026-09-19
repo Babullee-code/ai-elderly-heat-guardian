@@ -197,3 +197,53 @@ cannot silently regress.
 | Open alerts | 11 |
 | Cooling locations | 41 active of 42 |
 | Caregivers | 4 active of 5 |
+
+## Degradation rehearsals
+
+Three scenarios exist to rehearse the bad day. Each names a device type and
+nothing else — the source stops reporting, the assembler holds the last value,
+provenance marks it, and the risk engine works with what is left. **Nothing
+about the outcome is scripted**, which is the only way a rehearsal tells you
+anything about the real failure.
+
+### `SENSOR_OFFLINE` — the room thermometer dies mid-episode
+
+Observed on a live run:
+
+```
+HEAT_INCREASING  indoorTempC=27.5  SIMULATOR  LIVE     level=LOW     confidence=80%
+MEDIUM_RISK      indoorTempC=28.7  HELD       OFFLINE  level=LOW     confidence=75%
+HIGH_RISK        indoorTempC=28.7  HELD       OFFLINE  level=MEDIUM  confidence=69%
+RECOVERY         indoorTempC=34.2  SIMULATOR  LIVE     level=HIGH    confidence=74%
+```
+
+This is the lesson worth showing a judge. While the sensor was dark the
+platform **under-read the danger** — and said so, rather than pretending
+otherwise. The moment it reconnected the reading jumped 28.7 → 34.2 and the
+level jumped to HIGH, because the room had gone on heating the whole time. That
+jump is only possible because physics and measurement are separate (Phase 2);
+a simulator that froze the room would have shown a reassuring 28.7 on
+reconnect.
+
+### `WEARABLE_OFFLINE` — the physiological signal is lost
+
+```
+MEDIUM_RISK      heartRateBpm=81   HELD       OFFLINE  level=MEDIUM  confidence=75%
+RECOVERY         heartRateBpm=114  SIMULATOR  LIVE     level=HIGH    confidence=76%
+```
+
+The worse loss: heart rate against a personal baseline is the signal nothing
+else substitutes for. Risk continues on environmental evidence and confidence
+falls, instead of the missing signal reading as reassurance.
+
+### `NEW_RESIDENT` — no history to judge against
+
+Deliberately gentle on the weather; the subject is the baseline. Enrol a
+resident and the warm-up runs:
+
+```
+on enrolment      LEARNING     samples=0   nights=0/3  progress=  0%   band=62-84 (typical)
+after 1 night     LEARNING     samples=8   nights=1/3  progress= 50%   band=62-84 (typical)
+after 2 nights    PROVISIONAL  samples=16  nights=2/3  progress= 83%   band=68-71 (their own)
+after 3 nights    READY        samples=24  nights=3/3  progress=100%   band=68-71 (their own)
+```

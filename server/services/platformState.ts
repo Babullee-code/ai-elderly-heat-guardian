@@ -62,6 +62,7 @@ import {
   initialReading,
   scenarioDurationSec,
   resolvePhase,
+  scenarioOfflineDevices,
   tickHousehold,
 } from '../../shared/domain/simulationEngine.js';
 import { calculateHeatIndex, clamp, round1 } from '../../shared/domain/heatIndex.js';
@@ -156,6 +157,14 @@ class PlatformState {
    * persisted is the reading history, on the normal cadence.
    */
   private ingested = new Map<string, IngestedReadings>();
+
+  /**
+   * Devices this loop took offline for a scenario.
+   *
+   * Tracked so restoring them cannot undo a disable an administrator made for
+   * their own reasons - the scenario may only give back what it took.
+   */
+  private scenarioDowned = new Set<string>();
 
   private simulation: SimulationState = {
     running: true,
@@ -620,6 +629,8 @@ class PlatformState {
       await readingRepo.recordSensorSamples(sensorSamples);
     }
 
+    this.applyScenarioDeviceEffects();
+
     await this.touchReportingDevices(persist);
 
     /**
@@ -746,6 +757,44 @@ class PlatformState {
       measurements: entry.measurements.length,
       receivedAt: entry.receivedAt,
     }));
+  }
+
+  /**
+   * Take the focus resident's hardware offline where the scenario says so.
+   *
+   * The scenario names a device type and nothing else. What follows - the
+   * source reporting nothing, the assembler holding the last value, provenance
+   * marking it OFFLINE, the risk engine scoring on what remains - is the
+   * platform's ordinary behaviour, not a script. A rehearsal that scripted the
+   * outcome would tell nobody anything about the real failure.
+   *
+   * Devices the scenario has released are restored only if this loop was what
+   * took them down, so an administrator's own disable is never undone.
+   */
+  private applyScenarioDeviceEffects(): void {
+    const focusId = this.simulation.focusUserId;
+    if (!focusId) return;
+
+    const wanted = new Set(
+      this.simulation.running
+        ? scenarioOfflineDevices(this.simulation.scenario, this.simulation.elapsedSec)
+        : [],
+    );
+
+    for (const device of this.devices) {
+      if (device.userId !== focusId || device.isActuator) continue;
+
+      const shouldBeDown = wanted.has(device.type);
+
+      if (shouldBeDown && device.status === 'ONLINE') {
+        device.status = 'OFFLINE';
+        this.scenarioDowned.add(device.id);
+      } else if (!shouldBeDown && this.scenarioDowned.has(device.id)) {
+        device.status = 'ONLINE';
+        device.lastSeen = new Date().toISOString();
+        this.scenarioDowned.delete(device.id);
+      }
+    }
   }
 
   /**
@@ -1678,6 +1727,14 @@ class PlatformState {
     this.simulation.running = true;
     this.simulation.speed = 1;
     this.simulation.manualOffsets = { tempC: 0, humidityPct: 0, heartRateBpm: 0 };
+
+    // Give back every device the scenario took, before the runtimes reset.
+    for (const device of this.devices) {
+      if (!this.scenarioDowned.has(device.id)) continue;
+      device.status = 'ONLINE';
+      device.lastSeen = new Date().toISOString();
+    }
+    this.scenarioDowned.clear();
 
     for (const runtime of this.runtimes.values()) {
       // Reset the world as well as the record of it, or the next scenario

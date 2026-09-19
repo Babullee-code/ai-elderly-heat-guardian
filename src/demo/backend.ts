@@ -84,6 +84,7 @@ import {
   initialReading,
   resolvePhase,
   scenarioDurationSec,
+  scenarioOfflineDevices,
   tickHousehold,
 } from '@shared/domain/simulationEngine';
 import { calculateHeatIndex, clamp, round1 } from '@shared/domain/heatIndex';
@@ -214,6 +215,9 @@ export class DemoBackend {
     tickCount: 0,
     manualOffsets: { tempC: 0, humidityPct: 0, heartRateBpm: 0 },
   };
+
+  /** Devices this loop took offline for a scenario, and may give back. */
+  private scenarioDowned = new Set<string>();
 
   private initialised = false;
   private listeners = new Set<(snapshot: LiveSnapshot) => void>();
@@ -715,6 +719,7 @@ export class DemoBackend {
       }
     }
 
+    this.applyScenarioDeviceEffects();
     this.touchReportingDevices();
     this.escalateUnacknowledgedAlerts();
     this.updateCityRisk();
@@ -726,6 +731,39 @@ export class DemoBackend {
    * as the server so the two backends cannot disagree about when an
    * unanswered emergency gets chased.
    */
+  /**
+   * Mirror of the server's scenario device effects.
+   *
+   * The scenario names a device type; everything after that - held values,
+   * provenance, the risk the engine can still compute - is ordinary behaviour
+   * rather than a script.
+   */
+  private applyScenarioDeviceEffects(): void {
+    const focusId = this.simulation.focusUserId;
+    if (!focusId) return;
+
+    const wanted = new Set(
+      this.simulation.running
+        ? scenarioOfflineDevices(this.simulation.scenario, this.simulation.elapsedSec)
+        : [],
+    );
+
+    for (const device of this.devices) {
+      if (device.userId !== focusId || device.isActuator) continue;
+
+      const shouldBeDown = wanted.has(device.type);
+
+      if (shouldBeDown && device.status === 'ONLINE') {
+        device.status = 'OFFLINE';
+        this.scenarioDowned.add(device.id);
+      } else if (!shouldBeDown && this.scenarioDowned.has(device.id)) {
+        device.status = 'ONLINE';
+        device.lastSeen = new Date().toISOString();
+        this.scenarioDowned.delete(device.id);
+      }
+    }
+  }
+
   /**
    * Mirror of the server's device heartbeat: an online sensor that just
    * reported was, in fact, just seen. The age of a held value is measured
@@ -1279,6 +1317,13 @@ export class DemoBackend {
     this.simulation.running = true;
     this.simulation.speed = 1;
     this.simulation.manualOffsets = { tempC: 0, humidityPct: 0, heartRateBpm: 0 };
+
+    for (const device of this.devices) {
+      if (!this.scenarioDowned.has(device.id)) continue;
+      device.status = 'ONLINE';
+      device.lastSeen = new Date().toISOString();
+    }
+    this.scenarioDowned.clear();
 
     for (const runtime of this.runtimes.values()) {
       // Reset the world as well as the record of it, or the next scenario

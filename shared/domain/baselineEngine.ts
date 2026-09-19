@@ -10,6 +10,7 @@
 
 import type {
   BaselineEvaluation,
+  BaselineState,
   PersonalBaseline,
   RiskRuleConfig,
   WearableReading,
@@ -27,12 +28,129 @@ import { clamp, round1 } from './heatIndex.js';
  * @param readings Historical wearable samples. Should cover a resting period.
  * @param fallback Used when there are too few samples to learn from.
  */
+/**
+ * What a usable baseline requires.
+ *
+ * Twelve samples is the point at which a trimmed percentile range stops being
+ * dominated by individual readings. Three nights is the point at which it
+ * stops describing one particular evening - people sleep badly, or warmly, or
+ * after a heavy meal, and a band learned from one night carries all of that
+ * into every judgement afterwards.
+ */
+export const BASELINE_REQUIREMENTS = {
+  minSamples: 12,
+  minNights: 3,
+} as const;
+
+/**
+ * Hour at which one night is considered to have ended.
+ *
+ * A night spans midnight, so attributing samples to the calendar date they
+ * fall on would split a single night in two and report twice the coverage
+ * actually gathered. Samples before this hour belong to the evening that
+ * started the day before.
+ */
+const NIGHT_BOUNDARY_HOUR = 6;
+
+/**
+ * Distinct nights covered by a set of samples.
+ *
+ * Uses local time deliberately: the resting-hours filter that selects these
+ * samples does too, and the platform is deployed where its residents live.
+ * Mixing local hours with UTC dates would miscount every night by eight hours.
+ */
+export function countNights(readings: WearableReading[]): number {
+  const nights = new Set<string>();
+
+  for (const reading of readings) {
+    const at = new Date(reading.recordedAt);
+    if (Number.isNaN(at.getTime())) continue;
+
+    const night = new Date(at);
+    night.setHours(night.getHours() - NIGHT_BOUNDARY_HOUR);
+    nights.add(
+      `${night.getFullYear()}-${night.getMonth() + 1}-${night.getDate()}`,
+    );
+  }
+
+  return nights.size;
+}
+
+export interface BaselineReadiness {
+  state: BaselineState;
+  sampleCount: number;
+  nightsCovered: number;
+  requiredSamples: number;
+  requiredNights: number;
+  /** 0..1 across both requirements, for a progress indicator. */
+  progress: number;
+  /**
+   * True while the range shown belongs to the age group rather than to this
+   * person. Nothing in the UI may call it personal while this is true.
+   */
+  usingTypicalRanges: boolean;
+  summaryZh: string;
+  summary: string;
+}
+
+/** Where a baseline stands against what a usable one needs. */
+export function baselineReadiness(baseline: PersonalBaseline): BaselineReadiness {
+  const { minSamples, minNights } = BASELINE_REQUIREMENTS;
+
+  const sampleCount = baseline.sampleCount;
+  // Baselines persisted before nights were recorded: infer nothing, and let
+  // sample count alone decide. Claiming coverage that was never measured would
+  // be worse than reporting a baseline as less mature than it is.
+  const nightsCovered = baseline.nightsCovered ?? 0;
+
+  const hasSamples = sampleCount >= minSamples;
+  const hasNights = nightsCovered >= minNights;
+
+  const state: BaselineState = !hasSamples
+    ? 'LEARNING'
+    : hasNights
+      ? 'READY'
+      : 'PROVISIONAL';
+
+  const progress =
+    (Math.min(1, sampleCount / minSamples) + Math.min(1, nightsCovered / minNights)) / 2;
+
+  const remainingNights = Math.max(0, minNights - nightsCovered);
+
+  const summaryZh =
+    state === 'READY'
+      ? '已建立個人生理基準。'
+      : state === 'PROVISIONAL'
+        ? `已使用本人資料，但僅涵蓋 ${nightsCovered} 天，再累積約 ${remainingNights} 天會更準確。`
+        : `尚在建立個人基準（已取得 ${sampleCount}/${minSamples} 筆靜息資料），目前先以同齡常見範圍判讀。`;
+
+  const summary =
+    state === 'READY'
+      ? 'Personal baseline established.'
+      : state === 'PROVISIONAL'
+        ? `Learned from this resident, but only across ${nightsCovered} day(s); about ${remainingNights} more will settle it.`
+        : `Still learning (${sampleCount}/${minSamples} resting samples); using typical ranges for the age group meanwhile.`;
+
+  return {
+    state,
+    sampleCount,
+    nightsCovered,
+    requiredSamples: minSamples,
+    requiredNights: minNights,
+    progress: Math.round(progress * 100) / 100,
+    usingTypicalRanges: state === 'LEARNING',
+    summaryZh,
+    summary,
+  };
+}
+
 export function learnPersonalBaseline(
   userId: string,
   readings: WearableReading[],
   fallback?: Pick<PersonalBaseline, 'heartRate' | 'skinTemp' | 'activityStepsPerHour'>,
 ): PersonalBaseline {
-  const MIN_SAMPLES = 12;
+  const MIN_SAMPLES = BASELINE_REQUIREMENTS.minSamples;
+  const nightsCovered = countNights(readings);
 
   if (readings.length < MIN_SAMPLES) {
     const base =
@@ -45,6 +163,7 @@ export function learnPersonalBaseline(
       userId,
       ...base,
       sampleCount: readings.length,
+      nightsCovered,
       // Confidence scales with how close we are to a usable sample count.
       confidence: round2(clamp(readings.length / MIN_SAMPLES, 0, 1) * 0.6),
       learnedAt: new Date().toISOString(),
@@ -65,6 +184,7 @@ export function learnPersonalBaseline(
       mean: Math.round(steps.mean),
     },
     sampleCount: readings.length,
+    nightsCovered,
     // More samples means more confidence, saturating around 200 samples.
     confidence: round2(clamp(0.6 + (readings.length / 200) * 0.39, 0, 0.99)),
     learnedAt: new Date().toISOString(),
@@ -82,6 +202,8 @@ export function evaluateBaseline(
   heartRateBpm: number,
   baseline: PersonalBaseline,
 ): BaselineEvaluation {
+  const readiness = baselineReadiness(baseline);
+  const personal = !readiness.usingTypicalRanges;
   const { min, max } = baseline.heartRate;
   const aboveBaseline = heartRateBpm > max;
   const belowBaseline = heartRateBpm < min;
@@ -92,15 +214,26 @@ export function evaluateBaseline(
   let descriptionZh: string;
   let description: string;
 
+  /**
+   * Wording follows what was actually learned.
+   *
+   * Until the platform has this resident's own data it is comparing them with
+   * typical values for their age group, and calling that "your personal
+   * baseline" would be a claim it has not earned - on the one screen whose
+   * entire premise is that personal is different from typical.
+   */
+  const scopeZh = personal ? '個人平常' : '同齡常見';
+  const scope = personal ? 'personal baseline' : 'typical range for this age group';
+
   if (aboveBaseline) {
-    descriptionZh = `高於個人平常基準 ${deviationPct}%`;
-    description = `${deviationPct}% above personal baseline`;
+    descriptionZh = `高於${scopeZh}基準 ${deviationPct}%`;
+    description = `${deviationPct}% above ${scope}`;
   } else if (belowBaseline) {
-    descriptionZh = '低於個人平常基準';
-    description = 'Below personal baseline';
+    descriptionZh = `低於${scopeZh}基準`;
+    description = `Below ${scope}`;
   } else {
-    descriptionZh = '在個人平常範圍內';
-    description = 'Within personal baseline range';
+    descriptionZh = `在${scopeZh}範圍內`;
+    description = `Within ${scope}`;
   }
 
   return {
@@ -113,6 +246,8 @@ export function evaluateBaseline(
     descriptionZh,
     description,
     confidence: baseline.confidence,
+    personal,
+    state: readiness.state,
   };
 }
 
