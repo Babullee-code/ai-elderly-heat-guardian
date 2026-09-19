@@ -39,12 +39,45 @@ import type {
  * its own schedule - a household temperature sensor that wakes every 30
  * seconds is behaving normally, not lagging.
  */
+/** Fields supplied by a weather service rather than household hardware. */
+const WEATHER_FIELDS = new Set<MeasurementField>([
+  'outdoorTempC',
+  'outdoorHumidityPct',
+  'heatwaveDays',
+]);
+
 export const FRESHNESS = {
   /** At or under this age, the value is current. */
   liveSec: 60,
   /** Older than live but still usable for a risk decision. */
   recentSec: 300,
 } as const;
+
+/**
+ * Weather ages differently from a heartbeat.
+ *
+ * A meteorological service publishes on the hour, so an eleven-minute-old
+ * outdoor temperature is not a lagging reading - it is the current one, and
+ * the most recent that exists. Judging it against a sixty-second window
+ * labelled every resident's weather STALE within two minutes of a perfectly
+ * healthy fetch.
+ *
+ * That matters more than it sounds. A staleness indicator that is usually lit
+ * teaches people to stop reading it, and then the one that means something -
+ * the wearable that stopped four minutes ago - goes unnoticed. Bands are
+ * therefore set by how often the underlying source actually reports.
+ */
+export const WEATHER_FRESHNESS = {
+  /** Providers publish hourly; anything inside that is the current reading. */
+  liveSec: 3600,
+  /** Older than one publication cycle, still usable for a risk decision. */
+  recentSec: 3 * 3600,
+} as const;
+
+/** The freshness bands that apply to one field. */
+export function freshnessFor(field?: MeasurementField): { liveSec: number; recentSec: number } {
+  return field && WEATHER_FIELDS.has(field) ? WEATHER_FRESHNESS : FRESHNESS;
+}
 
 /** Every measured field, in display order. */
 export const MEASUREMENT_FIELDS: MeasurementField[] = [
@@ -86,13 +119,6 @@ export function primaryFieldForDevice(type: DeviceType): MeasurementField | null
 export function isHeldQuality(quality: DataQuality): boolean {
   return quality === 'STALE' || quality === 'OFFLINE';
 }
-
-/** Fields supplied by a weather service rather than household hardware. */
-const WEATHER_FIELDS = new Set<MeasurementField>([
-  'outdoorTempC',
-  'outdoorHumidityPct',
-  'heatwaveDays',
-]);
 
 export const FIELD_LABELS_ZH: Record<MeasurementField, string> = {
   indoorTempC: '室內溫度',
@@ -136,10 +162,17 @@ const QUALITY_ORDER: Record<DataQuality, number> = {
   OFFLINE: 3,
 };
 
-/** Freshness from age alone. Device availability is applied separately. */
-export function qualityFromAge(ageSec: number): DataQuality {
-  if (ageSec <= FRESHNESS.liveSec) return 'LIVE';
-  if (ageSec <= FRESHNESS.recentSec) return 'RECENT';
+/**
+ * Freshness from age alone. Device availability is applied separately.
+ *
+ * Pass the field so the bands match how often its source publishes; omitting
+ * it uses the household-sensor bands, which is the right default for anything
+ * reporting continuously.
+ */
+export function qualityFromAge(ageSec: number, field?: MeasurementField): DataQuality {
+  const bands = freshnessFor(field);
+  if (ageSec <= bands.liveSec) return 'LIVE';
+  if (ageSec <= bands.recentSec) return 'RECENT';
   return 'STALE';
 }
 
@@ -172,7 +205,7 @@ export function fieldProvenance(args: {
   return {
     field: args.field,
     origin: args.origin,
-    quality: args.held ? 'OFFLINE' : qualityFromAge(ageSec),
+    quality: args.held ? 'OFFLINE' : qualityFromAge(ageSec, args.field),
     observedAt: args.observedAt,
     ageSec,
     deviceId: args.deviceId,
@@ -279,7 +312,7 @@ function buildField(
     return {
       ...base,
       origin: simulated ? 'SIMULATOR' : 'WEATHER_API',
-      quality: qualityFromAge(base.ageSec),
+      quality: qualityFromAge(base.ageSec, field),
       noteZh: simulated ? '尚未連接氣象服務，目前使用模擬資料' : undefined,
       note: simulated ? 'No weather service connected; simulated value' : undefined,
     };
@@ -303,7 +336,7 @@ function buildField(
     return {
       ...base,
       origin: 'DEFAULT',
-      quality: qualityFromAge(base.ageSec),
+      quality: qualityFromAge(base.ageSec, field),
       noteZh: '未安裝感測器，此為環境模型推估值',
       note: 'No sensor installed; value estimated from the environment model',
     };
@@ -344,7 +377,7 @@ function buildField(
   return {
     ...base,
     origin: simulated ? 'SIMULATOR' : 'DEVICE',
-    quality: qualityFromAge(base.ageSec),
+    quality: qualityFromAge(base.ageSec, field),
     deviceId: device.deviceId,
     deviceName: device.nameZh,
     noteZh: simulated ? '模擬感測資料' : undefined,

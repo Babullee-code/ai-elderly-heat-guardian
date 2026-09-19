@@ -141,6 +141,17 @@ Posting once changes the device permanently:
   filling the gap with a simulated number that looks exactly like a measurement
   would hide a failed sensor in someone's home.
 
+### The weather source is live, not stored
+
+`ds-weather` is a view of an actual provider rather than a row with a status
+column. Its status, error rate, last sync and record count are measured.
+
+| Action | Effect |
+|---|---|
+| `PATCH /api/data-sources/ds-weather` `{enabled}` | Connects or disconnects the provider — this is what decides whether the process makes outbound calls at all |
+| `PATCH` `{config:{endpoint}}` | Changes the URL actually called. Not decoration: pointing it at a staging proxy, or at a black hole to rehearse an outage, is a real operation |
+| `POST /api/data-sources/ds-weather/sync` | A real fetch. **502** with the provider's own error when it fails, and `synced:false` — never a cheerful row count for a request that did not reach the network |
+
 ## Sensors & readings
 
 | Method | Path | Permission | Notes |

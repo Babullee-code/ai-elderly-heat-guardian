@@ -80,6 +80,7 @@ Imported verbatim by both the server and the browser. Pure functions, no I/O.
 | `provenance.ts` | Per-field origin and freshness: the only place staleness is decided |
 | `inputSources.ts` | Input sources and the assembler that builds one reading from them |
 | `ingest.ts` | Validation, the real-device source, and assimilation of real values |
+| `weather.ts` | Provider health, degradation, and the weather source it feeds |
 | `permissions.ts` | Role → permission table |
 | `config.ts` | **The only hard-coded thresholds in the codebase** |
 
@@ -200,7 +201,7 @@ Sources are ranked; lower wins:
 | Priority | Source | Status |
 |---|---|---|
 | 10 | `INGEST` — a real device posting to the API | **in use** |
-| 20 | `WEATHER_PROVIDER` — a connected weather service | Phase 4 |
+| 20 | `WEATHER_PROVIDER` — a connected weather service | **in use** |
 | 50 | `SIMULATED_DEVICE` — the simulator standing in for hardware | in use |
 | 55 | `SIMULATED_WEATHER` | in use |
 | 90 | `ENVIRONMENT_MODEL` — inference for fields nothing measures | in use |
@@ -236,6 +237,58 @@ The practical payoff is that a source is an interface, not a simulation detail.
 An HTTP ingest endpoint and a weather provider are additional sources at higher
 priority; the monitoring engine, the risk engine and every screen accept them
 without changes.
+
+## The weather provider
+
+`server/services/weatherService.ts` is the only part of the server that talks
+to an outside network. Everything about *what the platform does* with weather —
+freshness, degradation, how a failure is reported — lives in
+`shared/domain/weather.ts` and is tested without a socket.
+
+**Off by default.** A checkout makes no outbound requests until someone enables
+the source in the CMS, and `ds-weather` reads NOT_CONFIGURED until then. A demo
+that silently depends on a third party fails in the room rather than in CI.
+
+**What is sent:** a district's latitude and longitude. No resident data, no
+identifiers, no device information — Taipei's twelve district centroids are
+public coordinates. All twelve go in one request, because twelve parallel calls
+to a free public API invite the rate limiting that then shows up as a
+self-inflicted degraded state.
+
+### Health, and what each state means downstream
+
+| State | Provider | Outdoor values read as |
+|---|---|---|
+| `NOT_CONFIGURED` | nobody connected one | `SIMULATOR` |
+| `ONLINE` | recent successful fetch | `WEATHER_API` / LIVE |
+| `DEGRADED` | failing, last observation still usable | `WEATHER_API` / capped at RECENT, with the reason |
+| `OFFLINE` | failing past the threshold, or the observation expired | `HELD` / OFFLINE |
+
+Failures back off exponentially (30s doubling to a 30-minute ceiling) and a
+success clears the run outright — an indicator that stays lit after the problem
+passed teaches people to ignore it.
+
+**The simulator does not take back over.** Once a provider has delivered one
+observation, it owns outdoor conditions including when it fails. This is the
+same rule that governs a household sensor that has posted once, for the same
+reason: replacing a real 25 °C with an invented 34.5 °C labelled LIVE is worse
+than a visible gap.
+
+### Freshness is per field class
+
+A meteorological service publishes hourly, so an eleven-minute-old observation
+is the current one. Judged against the sixty-second window used for household
+sensors it read STALE, which lit the indicator for every resident minutes after
+a healthy fetch. Weather fields therefore use their own bands (LIVE ≤ 1h,
+RECENT ≤ 3h); everything reporting continuously keeps the original ones.
+
+### Scenarios and live weather
+
+A scripted demonstration works by driving outdoor temperature upward, which a
+live feed would overrule. Adding an offset to a real value and still calling it
+`WEATHER_API` would be a lie about where the number came from, so instead the
+**focus resident** falls back to simulated weather for the duration and is
+labelled `SIMULATOR`. Every other resident keeps the real feed.
 
 ## Data provenance
 

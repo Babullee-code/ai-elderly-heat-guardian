@@ -474,7 +474,20 @@ export const deviceRepo = {
     return row ? mapDevice(row) : null;
   },
 
-  /** Install a new key, replacing any existing one. */
+  /**
+   * Install a new key, replacing any existing one.
+   *
+   * Revoking also clears `lastIngestAt`, which is what returns the device to
+   * simulated operation. That needs justifying, because everywhere else in
+   * this system a device that has reported for itself keeps that
+   * responsibility forever - precisely so its silence cannot be papered over.
+   *
+   * The difference is who is speaking. A sensor going quiet says nothing; an
+   * administrator revoking its credential is stating that this device no
+   * longer reports, and the act is authenticated and audited. Without it a
+   * decommissioned or replaced device would be stuck reading OFFLINE with no
+   * way back, which is a different kind of wrong answer.
+   */
   async setIngestKey(
     id: string,
     key: { hash: string; prefix: string } | null,
@@ -485,6 +498,7 @@ export const deviceRepo = {
         ingestKeyHash: key?.hash ?? null,
         ingestKeyPrefix: key?.prefix ?? null,
         ingestKeyIssuedAt: key ? new Date() : null,
+        ...(key ? {} : { lastIngestAt: null }),
       },
     });
     return mapDevice(row);

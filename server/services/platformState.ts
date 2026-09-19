@@ -72,7 +72,12 @@ import {
   deviceIsReal,
   ingestSource,
 } from '../../shared/domain/ingest.js';
-import type { ExternalSources } from '../../shared/domain/inputSources.js';
+import type { ExternalSources, InputSource } from '../../shared/domain/inputSources.js';
+import {
+  scenarioOverridesWeather,
+  weatherProviderSource,
+} from '../../shared/domain/weather.js';
+import { weatherService } from './weatherService.js';
 import {
   mayContributeToCityStats,
   mayStorePhysiology,
@@ -516,7 +521,7 @@ class PlatformState {
             household: runtime.household,
             smartHome: runtime.smartHome,
             devices: userDevices,
-            external: this.externalSourcesFor(userDevices),
+            external: this.externalSourcesFor(userDevices, runtime.user.district, isFocus),
             simulation: this.simulation,
             isFocus,
           })
@@ -617,6 +622,16 @@ class PlatformState {
 
     await this.touchReportingDevices(persist);
 
+    /**
+     * Ask the weather provider for an update.
+     *
+     * Deliberately not awaited: a slow or hanging provider must not stall the
+     * monitoring loop for every resident. The service enforces its own poll
+     * interval and backoff, so calling this every tick costs nothing when
+     * there is nothing to do.
+     */
+    void weatherService.poll().catch(() => undefined);
+
     await this.escalateUnacknowledgedAlerts();
 
     if (this.simulation.tickCount % PRUNE_EVERY_TICKS === 0) {
@@ -663,8 +678,15 @@ class PlatformState {
     await deviceRepo.markIngested(device.id, now);
   }
 
-  /** What one resident's real devices are currently supplying. */
-  private externalSourcesFor(devices: Device[]): ExternalSources | undefined {
+  /**
+   * Everything supplying this resident from outside the simulator: their own
+   * devices, and the weather provider covering their district.
+   */
+  private externalSourcesFor(
+    devices: Device[],
+    district: string,
+    isFocus: boolean,
+  ): ExternalSources | undefined {
     const byDeviceId = new Map<string, ReturnType<typeof ingestSource>>();
     const realDeviceIds = new Set<string>();
 
@@ -674,7 +696,43 @@ class PlatformState {
       if (deviceIsReal(device)) realDeviceIds.add(device.id);
     }
 
-    return byDeviceId.size > 0 ? { byDeviceId, realDeviceIds } : undefined;
+    /**
+     * A scripted scenario works by driving outdoor temperature upward, which a
+     * live feed would immediately overrule. Rather than add an offset to a real
+     * value and keep calling it WEATHER_API - a lie about where the number came
+     * from - the focus resident falls back to simulated weather for the
+     * duration, labelled as the simulation it is. Every other resident keeps
+     * the real feed.
+     */
+    const extra: InputSource[] = [];
+    const scenarioRunning = scenarioOverridesWeather({
+      isFocus,
+      scenario: this.simulation.scenario,
+    });
+
+    const useProvider = weatherService.isEnabled() && !scenarioRunning;
+
+    if (useProvider) {
+      extra.push(
+        weatherProviderSource(
+          district,
+          weatherService.getObservation(district),
+          weatherService.getHealth(),
+        ),
+      );
+    }
+
+    /**
+     * Once the provider has delivered, it owns outdoor conditions - including
+     * when it fails. Letting the simulator resume would replace a real 25C
+     * with an invented 34.5C and label it LIVE, which is precisely the failure
+     * this platform is built to make impossible.
+     */
+    const suppressSimulatedWeather = useProvider && weatherService.hasDelivered();
+
+    if (byDeviceId.size === 0 && extra.length === 0) return undefined;
+
+    return { byDeviceId, realDeviceIds, extra, suppressSimulatedWeather };
   }
 
   /** Devices that have ever posted, for the ingest status endpoint. */

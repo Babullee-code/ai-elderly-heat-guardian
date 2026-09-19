@@ -385,6 +385,15 @@ export interface SourceReport {
    */
   priority: number;
   /**
+   * The best quality this source's values may be labelled with.
+   *
+   * For a source that is still returning real data but can no longer refresh
+   * it - a weather provider that has started failing while its last
+   * observation is still recent. The measurement is genuine, so holding it is
+   * right; calling it LIVE is not, because nothing is keeping it current.
+   */
+  qualityCap?: DataQuality;
+  /**
    * True for a source that only fills gaps nothing else covers.
    *
    * A fallback must never stand in for a sensor that has failed: replacing a

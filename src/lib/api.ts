@@ -7,6 +7,7 @@
  * a generic failure.
  */
 
+import type { WeatherHealth } from '@shared/domain/weather';
 import type {
   Account,
   ActionRule,
@@ -498,6 +499,13 @@ export const api = {
     }>('/data-sources'),
   updateDataSource: (id: string, body: unknown) =>
     patch<{ source: DataSource }>(`/data-sources/${id}`, body),
+  /**
+   * Trigger a synchronisation.
+   *
+   * For the weather source this is a real network call that can fail, and the
+   * response then carries the provider's health so the console can show the
+   * actual cause rather than a generic error.
+   */
   syncDataSource: (id: string) =>
     post<{
       source: DataSource;
@@ -505,6 +513,8 @@ export const api = {
       records: number;
       message: string;
       messageZh: string;
+      /** Present for the weather source, which really does call a provider. */
+      health?: WeatherHealth;
     }>(`/data-sources/${id}/sync`),
 
   // --- system -------------------------------------------------------------

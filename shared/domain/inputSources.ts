@@ -33,6 +33,7 @@
 
 import type {
   DataOrigin,
+  DataQuality,
   Device,
   FieldProvenance,
   HouseholdState,
@@ -249,6 +250,22 @@ export interface ExternalSources {
    * to prevent.
    */
   realDeviceIds: Set<string>;
+  /**
+   * External sources that belong to the resident rather than to one device -
+   * the weather provider covering their district, for instance.
+   */
+  extra?: InputSource[];
+  /**
+   * Stop the simulator standing in for outdoor conditions.
+   *
+   * Set once a real weather provider has delivered at least one observation.
+   * From then on its silence is information: if it fails, the outdoor values
+   * are held and labelled, not quietly replaced by a simulated number that
+   * looks exactly like a measurement. Identical in spirit to
+   * `realDeviceIds` - a source that has proved it reports for itself keeps
+   * that responsibility, including when it stops.
+   */
+  suppressSimulatedWeather?: boolean;
 }
 
 /**
@@ -278,7 +295,10 @@ export function sourcesForResident(
     if (simulated) sources.push(simulated);
   }
 
-  sources.push(simulatedWeatherSource(userId));
+  if (external?.extra) sources.push(...external.extra);
+
+  if (!external?.suppressSimulatedWeather) sources.push(simulatedWeatherSource(userId));
+
   sources.push(environmentModelSource(userId));
 
   return sources;
@@ -353,7 +373,8 @@ export function assembleReading(args: AssembleArgs): AssembledReading {
     if (winner && monitored) {
       const measurement = winner.measurements.find((m) => m.field === field)!;
       values[field] = measurement.value;
-      fields[field] = fieldProvenance({
+
+      const provenance = fieldProvenance({
         field,
         origin: winner.origin,
         observedAt: measurement.observedAt,
@@ -361,9 +382,15 @@ export function assembleReading(args: AssembleArgs): AssembledReading {
         simulated: winner.simulated,
         deviceId: winner.deviceId,
         deviceName: winner.deviceName,
-        noteZh: noteForOrigin(winner.origin),
-        note: noteForOriginEn(winner.origin),
+        noteZh: winner.unavailableReasonZh ?? noteForOrigin(winner.origin),
+        note: winner.unavailableReason ?? noteForOriginEn(winner.origin),
       });
+
+      // A source that is still returning real data but can no longer refresh
+      // it says so, and its values are labelled no better than that.
+      fields[field] = winner.qualityCap
+        ? { ...provenance, quality: worseQuality(provenance.quality, winner.qualityCap) }
+        : provenance;
       if (winner.simulated) anySimulated = true;
       if (winner.origin === 'DEFAULT') estimatedFields.push(field);
     } else {
@@ -470,6 +497,11 @@ function noteForOriginEn(origin: DataOrigin): string | undefined {
 }
 
 const QUALITY_RANK = { LIVE: 0, RECENT: 1, STALE: 2, OFFLINE: 3 } as const;
+
+/** The worse of two quality bands. */
+function worseQuality(a: DataQuality, b: DataQuality): DataQuality {
+  return QUALITY_RANK[a] >= QUALITY_RANK[b] ? a : b;
+}
 
 function worstOf(fields: Record<MeasurementField, FieldProvenance>) {
   let worst: FieldProvenance['quality'] = 'LIVE';

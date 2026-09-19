@@ -24,11 +24,23 @@ import {
   settingRepo,
 } from '../db/repositories.js';
 import { platformState } from '../services/platformState.js';
+import { weatherService } from '../services/weatherService.js';
 import { asyncHandler, pathParam, recordAudit, validate } from '../middleware/common.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
 
 export const contentRouter = Router();
 export const dataSourcesRouter = Router();
+
+/**
+ * The weather row is not a stored record with a status column - it is a live
+ * view of an actual provider. Everything shown for it (status, error rate,
+ * last sync, record count) is measured rather than remembered.
+ */
+const WEATHER_SOURCE_ID = 'ds-weather';
+
+function overlayLive(source: DataSource): DataSource {
+  return source.id === WEATHER_SOURCE_ID ? weatherService.describe(source) : source;
+}
 export const systemRouter = Router();
 export const settingsRouter = Router();
 export const auditRouter = Router();
@@ -198,7 +210,7 @@ dataSourcesRouter.get(
   requireAuth,
   requirePermission('data-source:read'),
   asyncHandler(async (_req, res) => {
-    const sources = await dataSourceRepo.list();
+    const sources = (await dataSourceRepo.list()).map(overlayLive);
 
     res.json({
       sources,
@@ -226,7 +238,23 @@ dataSourcesRouter.patch(
       return;
     }
 
-    const source = await dataSourceRepo.update(pathParam(req, 'id'), req.body as Partial<DataSource>);
+    const patch = req.body as Partial<DataSource>;
+
+    /**
+     * For the weather row, `enabled` is not a stored flag someone reads later
+     * - it decides whether this process makes outbound requests at all. The
+     * switch has to reach the service, or the CMS would be showing a control
+     * that changes a database column and nothing else.
+     */
+    if (before.id === WEATHER_SOURCE_ID) {
+      if (typeof patch.enabled === 'boolean') weatherService.setEnabled(patch.enabled);
+      // The endpoint field in the console is the one this process calls.
+      if (patch.config?.endpoint) weatherService.setEndpoint(patch.config.endpoint);
+    }
+
+    const source = overlayLive(
+      await dataSourceRepo.update(pathParam(req, 'id'), patch),
+    );
 
     await recordAudit(req, {
       action: 'Updated data source',
@@ -262,9 +290,53 @@ dataSourcesRouter.post(
       return;
     }
 
-    // The prototype has no outbound network dependency, so the record count
-    // it reports is the number of rows the platform actually holds for that
-    // source rather than an invented figure.
+    /**
+     * The weather source really does call out to a provider, so "sync" means
+     * a fetch that can fail - and if it does, this reports the failure rather
+     * than a cheerful success with a row count.
+     */
+    if (before.id === WEATHER_SOURCE_ID) {
+      const attemptsBefore = weatherService.getHealth().failures;
+      const health = await weatherService.fetchNow();
+      /**
+       * Success means THIS fetch succeeded - not that the service still has
+       * usable data from an earlier one. A DEGRADED provider is one that just
+       * failed, and reporting "fetched 12 districts" for a request that did
+       * not reach the network would be exactly the false success this project
+       * keeps removing.
+       */
+      const fetchSucceeded = health.failures === attemptsBefore;
+      const source = overlayLive(await dataSourceRepo.findById(before.id) as DataSource);
+
+      await recordAudit(req, {
+        action: 'Tested the weather provider connection',
+        actionZh: '測試氣象服務連線',
+        entity: 'DataSource',
+        entityId: before.id,
+        oldValue: before.status,
+        newValue: health.state,
+      });
+
+      const ok = fetchSucceeded;
+
+      res.status(ok ? 200 : 502).json({
+        source,
+        synced: ok,
+        records: weatherService.listObservations().length,
+        simulated: false,
+        health,
+        message: ok
+          ? `Fetched observations for ${weatherService.listObservations().length} districts in ${health.lastLatencyMs}ms.`
+          : `The weather provider could not be reached: ${health.lastError}`,
+        messageZh: ok
+          ? `已取得 ${weatherService.listObservations().length} 個行政區的觀測資料，耗時 ${health.lastLatencyMs} 毫秒。`
+          : `無法連線至氣象服務：${health.lastError}`,
+      });
+      return;
+    }
+
+    // Every other source is local, so the record count it reports is the
+    // number of rows the platform actually holds rather than an invented one.
     const actualCount = await countForSource(before.kind);
 
     const source = await dataSourceRepo.update(pathParam(req, 'id'), {

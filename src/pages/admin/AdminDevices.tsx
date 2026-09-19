@@ -226,7 +226,10 @@ export default function AdminDevices() {
     try {
       await api.revokeIngestKey(device.id);
       setIssuedKey(null);
-      toast.success(`已撤銷 ${device.deviceId} 的金鑰`, '此裝置將無法再回報資料。');
+      toast.success(
+        `已撤銷 ${device.deviceId} 的金鑰`,
+        '此裝置將無法再回報資料，數值改由模擬引擎提供。',
+      );
       await load();
     } catch (err) {
       toast.error('無法撤銷金鑰', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
@@ -878,9 +881,9 @@ export default function AdminDevices() {
 
             {keyFor?.lastIngestAt && (
               <p className="text-xs leading-relaxed text-muted-foreground">
-                撤銷金鑰後，模擬引擎<strong className="font-semibold">不會</strong>接手這個裝置的數值。
-                已回報過實機資料的裝置若停止回報，畫面會顯示最後一次讀值並標示為離線，
-                而不是改用推估值填補。
+                此裝置若<strong className="font-semibold">停止回報</strong>，畫面會顯示最後一次讀值並標示為離線，
+                模擬引擎不會接手填補。若要讓此裝置退回模擬資料，請明確撤銷金鑰——
+                那是管理者的決定，與裝置自己安靜下來是兩回事。
               </p>
             )}
           </div>

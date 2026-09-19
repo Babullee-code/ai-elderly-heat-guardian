@@ -1684,10 +1684,26 @@ route('POST', '/data-sources/:id/sync', (ctx, { id }) => {
     throw new HttpError(409, 'SOURCE_DISABLED', 'This data source is disabled.', '此資料來源已停用，請先啟用後再同步。');
   }
 
+  /**
+   * The weather source really does reach a provider - in the full stack. This
+   * build has no server and cannot make the call, so it says so rather than
+   * reporting a synchronisation that did not happen.
+   */
+  if (source.id === 'ds-weather') {
+    throw new HttpError(
+      501,
+      'NOT_AVAILABLE_IN_STATIC_DEMO',
+      'The weather provider needs the full stack; this static build has no server to call it from.',
+      '氣象服務需要完整後端才能連線，靜態展示版無法實際取得資料。',
+    );
+  }
+
   // Report what the platform actually holds, not an invented figure.
   const counts: Record<DataSource['kind'], number> = {
     WEATHER: [...db.environmentHistory.values()].reduce((s, v) => s + v.length, 0),
-    SENSOR: db.devices.length * 60,
+    // Previously `devices.length * 60`, which was exactly the invented figure
+    // the comment above promises not to print.
+    SENSOR: [...db.sensorHistory.values()].reduce((s, v) => s + v.length, 0),
     WEARABLE: [...db.wearableHistory.values()].reduce((s, v) => s + v.length, 0),
     CITY: db.cityRisk.length,
     COOLING_LOCATION: db.coolingSpaces.length,

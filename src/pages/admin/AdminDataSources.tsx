@@ -109,15 +109,32 @@ export default function AdminDataSources() {
     void load();
   }, [load]);
 
+  /** The most recent failure reported for each source, shown on its card. */
+  const [lastErrors, setLastErrors] = React.useState<Record<string, string | null>>({});
+
   const sync = async (source: DataSource) => {
     setBusyId(source.id);
     try {
       const result = await api.syncDataSource(source.id);
-      toast.success(`${source.nameZh} 已同步`, result.messageZh);
+
+      // The weather provider answers with what actually happened, including a
+      // partial fetch. Reporting that as an unqualified success would be the
+      // false-success pattern this project keeps removing.
+      if (result.synced === false) {
+        toast.error(`${source.nameZh} 同步未完成`, result.messageZh);
+        setLastErrors((prev) => ({ ...prev, [source.id]: result.health?.lastError ?? null }));
+      } else {
+        toast.success(`${source.nameZh} 已同步`, result.messageZh);
+        setLastErrors((prev) => ({ ...prev, [source.id]: null }));
+      }
+
       await load();
     } catch (err) {
-      // A disabled source returns 409 with a specific explanation.
-      toast.error('同步未執行', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+      // 409 for a disabled source, 502 when a provider could not be reached,
+      // 501 in the static build, which has no server to call from.
+      const message = err instanceof ApiError ? err.displayMessage : '請稍後再試。';
+      toast.error('同步未執行', message);
+      setLastErrors((prev) => ({ ...prev, [source.id]: message }));
     } finally {
       setBusyId(null);
     }
@@ -312,6 +329,17 @@ export default function AdminDataSources() {
                 <p className="truncate rounded bg-muted px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
                   {source.config.endpoint}
                 </p>
+
+                {/*
+                  The last error, verbatim. An operator deciding whether to act
+                  needs the cause, not a category - "ECONNREFUSED" and "429 Too
+                  Many Requests" call for completely different responses.
+                */}
+                {lastErrors[source.id] && (
+                  <p className="rounded border border-risk-medium-border bg-risk-medium-bg/40 px-2 py-1.5 text-[11px] text-risk-medium">
+                    最後一次錯誤：{lastErrors[source.id]}
+                  </p>
+                )}
 
                 {editable && (
                   <div className="flex flex-wrap gap-2">
