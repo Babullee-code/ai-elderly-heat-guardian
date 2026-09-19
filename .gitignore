@@ -7,3 +7,8 @@ prisma/dev.db-journal
 .DS_Store
 .run/
 .scratch/
+
+# Device credentials. The MQTT bridge's mapping file contains ingest keys, and
+# a key is enough to report as that sensor - it must never be committed.
+tools/mqtt-bridge/mapping.json
+tools/device-client/.testkey

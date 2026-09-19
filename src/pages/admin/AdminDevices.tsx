@@ -22,6 +22,7 @@ import {
   KeyRound,
   Plus,
   Power,
+  Radio,
   RefreshCw,
   Settings2,
   Signal,
@@ -76,6 +77,7 @@ import {
   Skeleton,
 } from '@/components/ui';
 import { PageHeader, StatCard } from '@/components/domain/Cards';
+import { DevicePairingWizard } from '@/components/domain/DevicePairingWizard';
 import { EmptyState, StatusIndicator } from '@/components/domain/RiskIndicators';
 import { DataTable, type Column } from '@/components/domain/DataTable';
 
@@ -138,6 +140,7 @@ export default function AdminDevices() {
   const [draft, setDraft] = React.useState({ ...NEW_DEVICE });
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
   const [residents, setResidents] = React.useState<{ id: string; name: string }[]>([]);
+  const [pairing, setPairing] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setError(null);
@@ -189,12 +192,12 @@ export default function AdminDevices() {
   }, [detailId]);
 
   React.useEffect(() => {
-    if (!creating || residents.length > 0) return;
+    if ((!creating && !pairing) || residents.length > 0) return;
     api
       .listUsers()
       .then((result) => setResidents(result.users.map((u) => ({ id: u.id, name: u.name }))))
       .catch(() => undefined);
-  }, [creating, residents.length]);
+  }, [creating, pairing, residents.length]);
 
   /**
    * The key-management dialog.
@@ -520,10 +523,21 @@ export default function AdminDevices() {
         description="平台上所有感測器與家電。停用或重新連線會立即影響對應長者的風險判讀與自動降溫能力。"
         actions={
           editable && (
-            <Button onClick={() => setCreating(true)}>
-              <Plus />
-              註冊裝置
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {/*
+                Pairing is the primary path because it ends with a device that
+                has actually reported. Plain registration stays for the case
+                where the hardware is not in hand yet.
+              */}
+              <Button onClick={() => setPairing(true)}>
+                <Radio />
+                連接新裝置
+              </Button>
+              <Button variant="outline" onClick={() => setCreating(true)}>
+                <Plus />
+                只註冊
+              </Button>
+            </div>
           )
         }
       />
@@ -817,6 +831,13 @@ export default function AdminDevices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <DevicePairingWizard
+        open={pairing}
+        onOpenChange={setPairing}
+        residents={residents}
+        onPaired={() => void load()}
+      />
+
       {/* ------------------------- Ingest key ------------------------------ */}
       <Dialog
         open={Boolean(keyFor)}

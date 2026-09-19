@@ -60,6 +60,24 @@ the reason rather than treating it as an error.
 | POST | `/:id/suspend` | `user:suspend` | Toggles; suspended residents are not monitored |
 | POST | `/:id/relearn-baseline` | `user:write` | 409 `CONSENT_REQUIRED` without data-storage consent |
 
+### Resident lifecycle
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| POST | `/:id/suspend` | `user:suspend` | Toggles a temporary pause |
+| POST | `/:id/archive` | `user:write` | Off the roster, devices released and their keys revoked. **Reversible**; history and audit kept |
+| POST | `/:id/restore` | `user:write` | Comes back as `INACTIVE`, not `ACTIVE` — their sensors are disabled and their baseline is stale |
+| DELETE | `/:id` | `user:write` | **Irreversible.** Requires `{confirmName}` matching the resident's name exactly, and only works on an already-archived resident |
+
+Archiving is what "delete" means for a person in a care system: the alerts
+raised about them and the actions taken on their behalf stay in the audit
+trail, because an audit trail whose subjects can vanish is not one. Erasure
+exists for the case where somebody genuinely asks to be erased; the audit entry
+recording who erased them is written *before* the deletion, and survives it.
+
+`GET /api/users` excludes archived residents. `?includeArchived=true` brings
+them back for the archive view.
+
 ## Caregivers — `/api/caregivers`
 
 | Method | Path | Permission |

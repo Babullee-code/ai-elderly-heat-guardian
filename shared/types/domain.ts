@@ -557,7 +557,30 @@ export interface BaselineEvaluation {
 // People
 // ---------------------------------------------------------------------------
 
-export type UserStatus = 'ACTIVE' | 'SUSPENDED' | 'INACTIVE';
+/**
+ * Where a resident sits in the monitoring lifecycle.
+ *
+ *   ACTIVE     monitored: risk evaluated, actions taken, alerts raised
+ *   SUSPENDED  temporarily paused - in hospital, away, or at their request
+ *   INACTIVE   enrolled but not yet monitoring, e.g. hardware not installed
+ *   ARCHIVED   removed from the roster; history kept
+ *
+ * ARCHIVED is what "delete" means for a person in a care system. Their record
+ * stops appearing anywhere operational, but the alerts raised about them and
+ * the actions taken on their behalf remain in the audit trail - an audit log
+ * whose subjects can vanish is not an audit log. Erasing the record outright
+ * is a separate, deliberate act (see the delete route), for the case where
+ * someone genuinely asks to be erased.
+ */
+export type UserStatus = 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | 'ARCHIVED';
+
+/** Statuses in which the platform is not evaluating risk for this resident. */
+export const UNMONITORED_STATUSES: UserStatus[] = ['SUSPENDED', 'INACTIVE', 'ARCHIVED'];
+
+/** Whether this resident should appear in the operational roster at all. */
+export function isRostered(status: UserStatus): boolean {
+  return status !== 'ARCHIVED';
+}
 
 export interface ElderlyUser {
   id: string;

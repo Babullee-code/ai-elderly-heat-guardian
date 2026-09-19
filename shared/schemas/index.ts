@@ -204,7 +204,33 @@ export const elderlyUserCreateSchema = z.object({
   }),
 });
 
-export const elderlyUserUpdateSchema = elderlyUserCreateSchema.partial();
+/**
+ * A partial update must not resurrect defaults.
+ *
+ * `.partial()` alone looks right and is not: zod still applies `.default()`
+ * when a field is absent, so a PATCH that only changed a phone number came
+ * back carrying `conditions: []` and `medications: []` and silently erased a
+ * resident's medical history - the same history the vulnerability factor
+ * scores them on.
+ *
+ * The bug was dormant for as long as nothing called the route. The fields that
+ * carry defaults are therefore redeclared here as plainly optional, so an
+ * absent field means "leave it alone" rather than "reset it".
+ */
+export const elderlyUserUpdateSchema = elderlyUserCreateSchema
+  .omit({
+    conditions: true,
+    medications: true,
+    status: true,
+    elderlyModeDefault: true,
+  })
+  .partial()
+  .extend({
+    conditions: z.array(safeText(40)).max(12).optional(),
+    medications: z.array(safeText(40)).max(12).optional(),
+    status: z.enum(['ACTIVE', 'SUSPENDED', 'INACTIVE', 'ARCHIVED']).optional(),
+    elderlyModeDefault: z.boolean().optional(),
+  });
 
 // ---------------------------------------------------------------------------
 // Caregivers

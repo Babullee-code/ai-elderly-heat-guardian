@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy to mapping.json and fill in real keys. mapping.json is gitignored: it holds credentials.",
+
+  "server": "http://localhost:4000",
+  "broker": "mqtt://localhost:1883",
+
+  "devices": [
+    {
+      "label": "王奶奶 客廳",
+      "key": "hgk_REPLACE_WITH_A_REAL_KEY",
+      "topics": {
+        "home/wang/livingroom/temperature": "indoorTempC",
+        "home/wang/livingroom/humidity": "indoorHumidityPct"
+      }
+    },
+    {
+      "label": "王奶奶 手錶",
+      "key": "hgk_REPLACE_WITH_ANOTHER_KEY",
+      "topics": {
+        "home/wang/wearable/heartrate": "heartRateBpm",
+        "home/wang/wearable/skintemp": "skinTempC",
+        "home/wang/wearable/steps": "activityStepsPerHour"
+      }
+    }
+  ]
+}

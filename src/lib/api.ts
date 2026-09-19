@@ -162,7 +162,19 @@ const post = <T,>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
 const patch = <T,>(path: string, body: unknown) =>
   request<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
-const del = <T,>(path: string) => request<T>(path, { method: 'DELETE' });
+/**
+ * DELETE, optionally with a body.
+ *
+ * A body on a DELETE is unusual but right here: erasing a resident requires a
+ * typed confirmation, and putting that in the URL would leave a person's name
+ * in server logs and browser history for an operation whose whole point is
+ * that the record goes away.
+ */
+const del = <T,>(path: string, body?: unknown) =>
+  request<T>(path, {
+    method: 'DELETE',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
 
 // ---------------------------------------------------------------------------
 // Response shapes
@@ -265,6 +277,23 @@ export const api = {
   getUser: (id: string) => get<UserDetail>(`/users/${id}`),
   createUser: (body: unknown) => post<{ user: ElderlyUser }>('/users', body),
   updateUser: (id: string, body: unknown) => patch<{ user: ElderlyUser }>(`/users/${id}`, body),
+
+  /** Take a resident off the roster, keeping their history. Reversible. */
+  archiveUser: (id: string) =>
+    post<{ user: ElderlyUser; devicesReleased: number; messageZh: string }>(
+      `/users/${id}/archive`,
+      {},
+    ),
+  restoreUser: (id: string) =>
+    post<{ user: ElderlyUser; messageZh: string }>(`/users/${id}/restore`, {}),
+  /**
+   * Erase a resident permanently.
+   *
+   * Requires the resident's exact name as confirmation, and only works on one
+   * that is already archived. Not recoverable.
+   */
+  deleteUser: (id: string, confirmName: string) =>
+    del<{ deleted: boolean; id: string; messageZh: string }>(`/users/${id}`, { confirmName }),
   updateUserPermissions: (id: string, body: unknown) =>
     patch<{ user: ElderlyUser }>(`/users/${id}/permissions`, body),
   suspendUser: (id: string) => post<{ user: ElderlyUser }>(`/users/${id}/suspend`),

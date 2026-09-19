@@ -24,7 +24,13 @@ import {
   userRepo,
 } from '../db/repositories.js';
 import { platformState } from '../services/platformState.js';
-import { asyncHandler, pathParam, recordAudit, validate } from '../middleware/common.js';
+import {
+  asyncHandler,
+  pathParam,
+  queryParam,
+  recordAudit,
+  validate,
+} from '../middleware/common.js';
 import { requireAuth, requirePermission, requireUserScope } from '../middleware/auth.js';
 
 export const usersRouter = Router();
@@ -45,6 +51,17 @@ usersRouter.get(
   asyncHandler(async (req, res) => {
     const account = req.account!;
     let users = await userRepo.list();
+
+    /**
+     * Archived residents are off the roster.
+     *
+     * Archiving is only meaningful if it actually removes someone from the
+     * operational views - otherwise it is a label rather than an action.
+     * `?includeArchived=true` brings them back for the archive screen itself.
+     */
+    if (queryParam(req, 'includeArchived') !== 'true') {
+      users = users.filter((u) => u.status !== 'ARCHIVED');
+    }
 
     if (account.role === 'CAREGIVER' && account.caregiverId) {
       const caregiver = await caregiverRepo.findById(account.caregiverId);
@@ -308,6 +325,209 @@ usersRouter.post(
 
     await platformState.reloadUsers();
     res.json({ user });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Lifecycle: archive, restore, erase
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/users/:id/archive
+ *
+ * Take a resident off the roster without destroying what happened to them.
+ *
+ * This is what "delete" means for a person in a care system. Monitoring stops,
+ * they leave every operational view and the city statistics, and their devices
+ * are released - but the alerts raised about them, the actions taken on their
+ * behalf and the audit entries naming them all survive. An audit trail whose
+ * subjects can vanish is not an audit trail, and "who was being monitored when
+ * this alert fired" has to stay answerable afterwards.
+ *
+ * Reversible. Erasing the record outright is a separate, deliberate act below.
+ */
+usersRouter.post(
+  '/:id/archive',
+  requireAuth,
+  requirePermission('user:write'),
+  asyncHandler(async (req, res) => {
+    const before = await userRepo.findById(pathParam(req, 'id'));
+
+    if (!before) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'That resident does not exist.' });
+      return;
+    }
+
+    if (before.status === 'ARCHIVED') {
+      res.status(409).json({
+        error: 'ALREADY_ARCHIVED',
+        message: 'This resident is already archived.',
+        messageZh: '此長者已封存。',
+      });
+      return;
+    }
+
+    const user = await userRepo.update(before.id, { status: 'ARCHIVED' });
+
+    /**
+     * Release the hardware. Someone who is no longer monitored should not be
+     * holding devices that could be reassigned, and leaving their sensors
+     * "online" would keep them in the device health figures.
+     */
+    const devices = await deviceRepo.forUser(before.id);
+    for (const device of devices) {
+      await deviceRepo.update(device.id, { status: 'DISABLED' });
+      // A released device must not keep a working credential.
+      if (device.ingestKeyPrefix) await deviceRepo.setIngestKey(device.id, null);
+    }
+
+    await recordAudit(req, {
+      action: 'Archived resident',
+      actionZh: '封存長者資料',
+      entity: 'ElderlyUser',
+      entityId: user.id,
+      oldValue: before.status,
+      newValue: `ARCHIVED (${devices.length} device(s) released)`,
+    });
+
+    await platformState.reloadUsers();
+    await platformState.reloadDevices();
+
+    res.json({
+      user,
+      devicesReleased: devices.length,
+      messageZh: `已封存 ${user.name}，並釋出 ${devices.length} 個裝置。歷史紀錄與稽核軌跡都保留。`,
+    });
+  }),
+);
+
+/**
+ * POST /api/users/:id/restore
+ *
+ * Bring an archived resident back. Their devices stay disabled - hardware is
+ * re-enabled deliberately, after someone has confirmed it is actually there.
+ */
+usersRouter.post(
+  '/:id/restore',
+  requireAuth,
+  requirePermission('user:write'),
+  asyncHandler(async (req, res) => {
+    const before = await userRepo.findById(pathParam(req, 'id'));
+
+    if (!before) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'That resident does not exist.' });
+      return;
+    }
+
+    if (before.status !== 'ARCHIVED') {
+      res.status(409).json({
+        error: 'NOT_ARCHIVED',
+        message: 'Only an archived resident can be restored.',
+        messageZh: '只有已封存的長者可以復原。',
+      });
+      return;
+    }
+
+    /**
+     * Restored as INACTIVE, not ACTIVE.
+     *
+     * Their sensors are disabled and their baseline is stale. Putting them
+     * straight back into monitoring would produce held values and immediate
+     * alerts about a situation nobody has looked at yet.
+     */
+    const user = await userRepo.update(before.id, { status: 'INACTIVE' });
+
+    await recordAudit(req, {
+      action: 'Restored archived resident',
+      actionZh: '復原已封存的長者',
+      entity: 'ElderlyUser',
+      entityId: user.id,
+      oldValue: 'ARCHIVED',
+      newValue: 'INACTIVE',
+    });
+
+    await platformState.reloadUsers();
+
+    res.json({
+      user,
+      messageZh: '已復原為「未啟用」。請確認裝置狀態後再啟動監測。',
+    });
+  }),
+);
+
+/**
+ * DELETE /api/users/:id
+ *
+ * Erase a resident permanently, and everything attached to them.
+ *
+ * Deliberately awkward, and deliberately narrow:
+ *
+ *  - only an ARCHIVED resident may be erased, so nobody deletes a person who
+ *    is actively being monitored with one mis-click;
+ *  - the caller must send back the resident's exact name, so the request
+ *    cannot be replayed against the wrong id;
+ *  - it cascades, and it cannot be undone.
+ *
+ * This exists for the case where someone genuinely asks to be erased. For
+ * every other case, archiving is the right answer and keeps the record honest.
+ */
+usersRouter.delete(
+  '/:id',
+  requireAuth,
+  requirePermission('user:write'),
+  asyncHandler(async (req, res) => {
+    const user = await userRepo.findById(pathParam(req, 'id'));
+
+    if (!user) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'That resident does not exist.' });
+      return;
+    }
+
+    if (user.status !== 'ARCHIVED') {
+      res.status(409).json({
+        error: 'ARCHIVE_FIRST',
+        message: 'Archive this resident before erasing them permanently.',
+        messageZh: '請先封存此長者，才能永久刪除。封存可復原，刪除不可。',
+      });
+      return;
+    }
+
+    const confirmation = (req.body as { confirmName?: string } | undefined)?.confirmName;
+
+    if (confirmation !== user.name) {
+      res.status(400).json({
+        error: 'CONFIRMATION_REQUIRED',
+        message: "Send confirmName exactly matching the resident's name to confirm erasure.",
+        messageZh: '請輸入與長者姓名完全相同的文字以確認永久刪除。',
+      });
+      return;
+    }
+
+    /**
+     * Record the erasure BEFORE performing it.
+     *
+     * Afterwards there is no row to reference, and the one thing that must
+     * survive is the fact that somebody did this, and who.
+     */
+    await recordAudit(req, {
+      action: 'Permanently erased resident',
+      actionZh: '永久刪除長者資料',
+      entity: 'ElderlyUser',
+      entityId: user.id,
+      oldValue: `${user.name} (${user.district}), archived`,
+      newValue: 'erased - not recoverable',
+    });
+
+    await userRepo.remove(user.id);
+
+    await platformState.reloadUsers();
+    await platformState.reloadDevices();
+
+    res.json({
+      deleted: true,
+      id: user.id,
+      messageZh: `已永久刪除 ${user.name} 的所有資料。此操作無法復原。`,
+    });
   }),
 );
 

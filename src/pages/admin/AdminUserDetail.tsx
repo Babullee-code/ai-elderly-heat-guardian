@@ -7,7 +7,7 @@
  */
 
 import * as React from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -22,8 +22,12 @@ import {
   MapPin,
   Phone,
   RefreshCw,
+  Archive,
+  ArchiveRestore,
+  Pencil,
   Shield,
   Stethoscope,
+  Trash2,
   Thermometer,
   User,
   Users,
@@ -52,6 +56,13 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
   Label,
   Separator,
   Skeleton,
@@ -121,6 +132,7 @@ export default function AdminUserDetail() {
   const liveSmartHome = useLiveStore(selectSmartHome(id));
   const liveHistory = useLiveStore(selectHistory(id));
 
+  const navigate = useNavigate();
   const [detail, setDetail] = React.useState<UserDetail | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -183,6 +195,111 @@ export default function AdminUserDetail() {
       toast.success(value ? '授權已開啟' : '授權已關閉', '變更會在下一個更新週期生效。');
     } catch (err) {
       toast.error('無法變更授權', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Editing a resident's details.
+   *
+   * The API for this has existed all along; nothing called it, so the only way
+   * to correct a phone number or an address was to edit the database by hand.
+   */
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState({
+    name: '',
+    phone: '',
+    address: '',
+    district: '',
+    emergencyName: '',
+    emergencyRelationship: '',
+    emergencyPhone: '',
+  });
+
+  /** Archive / restore / erase. */
+  const [confirmArchive, setConfirmArchive] = React.useState(false);
+  const [confirmErase, setConfirmErase] = React.useState(false);
+  const [eraseTyped, setEraseTyped] = React.useState('');
+
+  const openEditor = () => {
+    if (!detail) return;
+    const u = detail.user;
+    setDraft({
+      name: u.name,
+      phone: u.phone,
+      address: u.address,
+      district: u.district,
+      emergencyName: u.emergencyContact.name,
+      emergencyRelationship: u.emergencyContact.relationship,
+      emergencyPhone: u.emergencyContact.phone,
+    });
+    setEditing(true);
+  };
+
+  const saveEdits = async () => {
+    if (!id) return;
+    setBusy(true);
+    try {
+      await api.updateUser(id, {
+        name: draft.name,
+        phone: draft.phone,
+        address: draft.address,
+        district: draft.district,
+        emergencyContact: {
+          name: draft.emergencyName,
+          relationship: draft.emergencyRelationship,
+          phone: draft.emergencyPhone,
+        },
+      });
+      toast.success('已更新長者資料');
+      setEditing(false);
+      await load();
+    } catch (err) {
+      toast.error('更新失敗', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const archive = async () => {
+    if (!id) return;
+    setBusy(true);
+    try {
+      const result = await api.archiveUser(id);
+      toast.success('已封存', result.messageZh);
+      setConfirmArchive(false);
+      await load();
+    } catch (err) {
+      toast.error('封存失敗', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restore = async () => {
+    if (!id) return;
+    setBusy(true);
+    try {
+      const result = await api.restoreUser(id);
+      toast.success('已復原', result.messageZh);
+      await load();
+    } catch (err) {
+      toast.error('復原失敗', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const erase = async () => {
+    if (!id || !detail) return;
+    setBusy(true);
+    try {
+      await api.deleteUser(id, eraseTyped);
+      toast.success('已永久刪除', '該長者的所有資料已移除，稽核紀錄保留。');
+      navigate('/admin/users');
+    } catch (err) {
+      toast.error('刪除失敗', err instanceof ApiError ? err.displayMessage : '請稍後再試。');
     } finally {
       setBusy(false);
     }
@@ -263,12 +380,59 @@ export default function AdminUserDetail() {
           <>
             {assessment && <RiskBadge level={assessment.level} size="lg" showEnglish />}
             <Badge variant={user.status === 'ACTIVE' ? 'success' : 'muted'}>
-              {user.status === 'ACTIVE' ? '監測中' : user.status === 'SUSPENDED' ? '已暫停' : '未啟用'}
+              {user.status === 'ACTIVE'
+                ? '監測中'
+                : user.status === 'SUSPENDED'
+                  ? '已暫停'
+                  : user.status === 'ARCHIVED'
+                    ? '已封存'
+                    : '未啟用'}
             </Badge>
-            {can('user:suspend') && (
+
+            {can('user:write') && user.status !== 'ARCHIVED' && (
+              <Button variant="outline" onClick={openEditor}>
+                <Pencil />
+                編輯資料
+              </Button>
+            )}
+
+            {can('user:suspend') && user.status !== 'ARCHIVED' && (
               <Button variant="outline" onClick={suspend} loading={busy}>
                 {user.status === 'SUSPENDED' ? '恢復監測' : '暫停監測'}
               </Button>
+            )}
+
+            {/*
+              Archive is the ordinary way to remove someone, and it is
+              reversible. Permanent erasure is only offered once they are
+              already archived - a deliberate second step rather than a
+              neighbouring button that does something irreversible.
+            */}
+            {can('user:write') && user.status !== 'ARCHIVED' && (
+              <Button variant="outline" onClick={() => setConfirmArchive(true)}>
+                <Archive />
+                封存
+              </Button>
+            )}
+
+            {can('user:write') && user.status === 'ARCHIVED' && (
+              <>
+                <Button variant="outline" onClick={restore} loading={busy}>
+                  <ArchiveRestore />
+                  復原
+                </Button>
+                <Button
+                  variant="outline"
+                  className="border-risk-high-border text-risk-high hover:bg-risk-high-bg"
+                  onClick={() => {
+                    setEraseTyped('');
+                    setConfirmErase(true);
+                  }}
+                >
+                  <Trash2 />
+                  永久刪除
+                </Button>
+              </>
             )}
           </>
         }
@@ -279,7 +443,9 @@ export default function AdminUserDetail() {
           <CardContent className="flex items-start gap-3 p-4">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-risk-medium" />
             <p className="text-sm text-risk-medium">
-              此長者目前未在監測中，因此沒有即時風險判讀。以下顯示的是最後一次記錄的資料。
+              {user.status === 'ARCHIVED'
+                ? '此長者已封存，不再出現於名冊與城市統計，其裝置也已釋出。歷史紀錄與稽核軌跡都完整保留，可隨時復原。'
+                : '此長者目前未在監測中，因此沒有即時風險判讀。以下顯示的是最後一次記錄的資料。'}
             </p>
           </CardContent>
         </Card>
@@ -740,11 +906,178 @@ export default function AdminUserDetail() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* ----------------------------- Edit ------------------------------- */}
+      <Dialog open={editing} onOpenChange={(open) => !open && setEditing(false)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>編輯長者資料</DialogTitle>
+            <DialogDescription>
+              變更會立即生效，並記錄於稽核軌跡。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="姓名">
+              <Input
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              />
+            </Field>
+            <Field label="電話">
+              <Input
+                value={draft.phone}
+                onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
+              />
+            </Field>
+            <Field label="行政區">
+              <Input
+                value={draft.district}
+                onChange={(e) => setDraft({ ...draft, district: e.target.value })}
+              />
+            </Field>
+            <Field label="地址">
+              <Input
+                value={draft.address}
+                onChange={(e) => setDraft({ ...draft, address: e.target.value })}
+              />
+            </Field>
+          </div>
+
+          <Separator />
+
+          <p className="text-xs font-medium text-muted-foreground">緊急聯絡人</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="姓名">
+              <Input
+                value={draft.emergencyName}
+                onChange={(e) => setDraft({ ...draft, emergencyName: e.target.value })}
+              />
+            </Field>
+            <Field label="關係">
+              <Input
+                value={draft.emergencyRelationship}
+                onChange={(e) =>
+                  setDraft({ ...draft, emergencyRelationship: e.target.value })
+                }
+              />
+            </Field>
+            <Field label="電話">
+              <Input
+                value={draft.emergencyPhone}
+                onChange={(e) => setDraft({ ...draft, emergencyPhone: e.target.value })}
+              />
+            </Field>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void saveEdits()} loading={busy}>
+              儲存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------------------------- Archive ----------------------------- */}
+      <Dialog open={confirmArchive} onOpenChange={(open) => !open && setConfirmArchive(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>封存 {user.name}？</DialogTitle>
+            <DialogDescription>這個動作可以復原。</DialogDescription>
+          </DialogHeader>
+
+          <ul className="space-y-1.5 text-sm text-muted-foreground">
+            <li>· 停止監測：不再計算風險、發送通知或自動控制設備</li>
+            <li>· 自名冊、城市統計與照護者清單中移除</li>
+            <li>· 釋出其所有裝置（金鑰一併撤銷）</li>
+            <li>· 歷史紀錄、警示與稽核軌跡<strong className="font-semibold text-foreground">完整保留</strong></li>
+          </ul>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmArchive(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void archive()} loading={busy}>
+              封存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ----------------------------- Erase ------------------------------ */}
+      <Dialog
+        open={confirmErase}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmErase(false);
+            setEraseTyped('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-risk-high">永久刪除 {user.name}？</DialogTitle>
+            <DialogDescription>
+              這個動作<strong className="font-semibold">無法復原</strong>。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border border-risk-high-border bg-risk-high-bg/40 p-3">
+              <p className="text-sm text-risk-high">
+                將一併刪除此長者的所有讀值、警示、通知與裝置紀錄。
+                僅有稽核軌跡會保留「誰在何時刪除了這筆資料」。
+              </p>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              若只是要停止監測，請改用<strong className="font-semibold text-foreground">封存</strong>
+              ——封存可以復原，而且保留完整病史。
+            </p>
+
+            <Field label={`請輸入「${user.name}」以確認`}>
+              <Input
+                value={eraseTyped}
+                onChange={(e) => setEraseTyped(e.target.value)}
+                placeholder={user.name}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmErase(false)}>
+              取消
+            </Button>
+            <Button
+              className="bg-risk-high text-white hover:bg-risk-high/90"
+              disabled={eraseTyped !== user.name}
+              onClick={() => void erase()}
+              loading={busy}
+            >
+              永久刪除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
+
+/** A labelled form field, used by the edit and erase dialogs. */
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">{label}</Label>
+      {children}
+    </div>
+  );
+}
 
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (

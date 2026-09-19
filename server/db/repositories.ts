@@ -241,6 +241,18 @@ export const userRepo = {
     return out;
   },
 
+  /**
+   * Erase a resident and everything attached to them.
+   *
+   * The cascade is declared in the schema, so devices, readings, alerts,
+   * notifications, risk events and caregiver assignments go with them. Audit
+   * entries do NOT - they reference the id as a plain string rather than a
+   * foreign key, precisely so the record of an erasure outlives its subject.
+   */
+  async remove(id: string): Promise<void> {
+    await prisma.elderlyUser.delete({ where: { id } });
+  },
+
   async setBaseline(id: string, baseline: PersonalBaseline): Promise<void> {
     await prisma.elderlyUser.update({ where: { id }, data: { baseline: toJson(baseline) } });
   },

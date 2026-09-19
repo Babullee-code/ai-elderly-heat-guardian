@@ -73,12 +73,14 @@ const STATUS_ZH: Record<UserStatus, string> = {
   ACTIVE: '監測中',
   SUSPENDED: '已暫停',
   INACTIVE: '未啟用',
+  ARCHIVED: '已封存',
 };
 
 const STATUS_VARIANT: Record<UserStatus, 'success' | 'warning' | 'muted'> = {
   ACTIVE: 'success',
   SUSPENDED: 'warning',
   INACTIVE: 'muted',
+  ARCHIVED: 'muted',
 };
 
 const RISK_FILTER_LABEL: Record<RiskLevel, string> = {
