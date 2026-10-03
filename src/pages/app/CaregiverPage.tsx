@@ -296,7 +296,7 @@ export default function CaregiverPage() {
           description="照護儀表板讓您的家人或照護者一次看顧多位長者。您自己的健康狀況、目前風險與建議行動，都在「總覽」畫面上。"
           action={
             <Button asChild>
-              <a href="/app">回到我的總覽</a>
+              <Link to="/app">回到我的總覽</Link>
             </Button>
           }
         />

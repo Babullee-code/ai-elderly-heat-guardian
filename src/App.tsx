@@ -11,7 +11,7 @@
  */
 
 import * as React from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 
 import { useSession } from '@/store/session';
@@ -192,12 +192,14 @@ function NotFound() {
         <h1 className="text-xl font-semibold">找不到這個頁面</h1>
         <p className="text-sm text-muted-foreground">您要找的頁面可能已移動或不存在。</p>
       </div>
-      <a
-        href="/app"
+      {/* A <Link>, not an <a>: a raw href ignores the router's basename and
+          would leave the app entirely on a sub-path deploy. */}
+      <Link
+        to="/app"
         className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
       >
         回到首頁
-      </a>
+      </Link>
     </div>
   );
 }
