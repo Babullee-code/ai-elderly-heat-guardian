@@ -176,6 +176,17 @@ export default function App() {
             </Route>
 
             <Route path="/" element={<Navigate to={account ? '/app' : '/login'} replace />} />
+            {/*
+              A static host serves index.html as a real file, so the address
+              "/<repo>/index.html" is reachable - bookmarks, link checkers and
+              some tools append it. It is the same page as "/", not a missing
+              one, and showing a 404 for the site's own front door is a poor
+              first impression.
+            */}
+            <Route
+              path="/index.html"
+              element={<Navigate to={account ? '/app' : '/login'} replace />}
+            />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </ErrorBoundary>
